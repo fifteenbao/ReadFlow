@@ -8,7 +8,8 @@ test('icon popup offers collection and settings, and captures through the truste
   t.after(() => Object.assign(globalThis, original));
   class Element {
     constructor() { this.value = ''; this.children = []; this.checked = false; this.textContent = ''; this.disabled = false; this.attrs = {}; this.events = {}; }
-    append(...values) { this.children.push(...values); } replaceChildren(...values) { this.children = values; }
+    append(...values) { this.children.push(...values); } appendChild(value) { this.children.push(value); return value; }
+    replaceChildren(...values) { this.children = values; }
     setAttribute(key, value) { this.attrs[key] = value; } removeAttribute(key) { delete this.attrs[key]; }
     getAttribute(key) { return this.attrs[key]; } addEventListener(name, work) { this.events[name] = work; }
   }
@@ -19,25 +20,30 @@ test('icon popup offers collection and settings, and captures through the truste
     const id = match[0].match(/\bid="([^"]+)"/)?.[1], node = id ? get(id) : new Element();
     node.attrs['data-i18n'] = match[1]; translateNodes.push(node);
   }
-  let result = { ok: true, saved: true, synced: false }, opened = [], sent = [];
-  globalThis.document = { documentElement: {}, querySelectorAll: () => translateNodes, getElementById: get, createElement: () => new Element() };
+  let result = { ok: true, saved: true, synced: true }, opened = [], sent = [];
+  globalThis.document = { documentElement: {}, querySelectorAll: () => translateNodes, getElementById: get, createElement: () => new Element(),
+    createTextNode: value => ({ nodeType: 3, textContent: String(value) }) };
   globalThis.window = { close() {} };
   globalThis.chrome = { storage: { local: area({ uiLanguage: 'zh' }) },
     tabs: { create: async info => opened.push(info.url) }, runtime: { getURL: path => 'chrome-extension://test/' + path,
-      sendMessage: async message => { sent.push(message); return message.type === 'POPUP_STATUS' ? { ok: true, connected: true } : message.type === 'CAPTURE_CONTEXT' ? { ok: true, url: 'https://example.com/a', title: 'Article', tags: ['AI'], remark: 'Existing remark', tagOptions: ['AI', 'Research'] } : result; } } };
+      sendMessage: async message => { sent.push(message); return message.type === 'POPUP_STATUS' ? { ok: true, connected: true } : message.type === 'CAPTURE_CONTEXT' ? { ok: true, existing: true, url: 'https://example.com/a', title: 'Article', tags: ['AI'], remark: 'Existing remark', tagOptions: ['AI', 'Research'], purpose: 'later', contentType: 'web', starred: false, inferredContentType: 'web' } : result; } } };
   await import('../src/popup.js');
-  assert.equal(get('open-collection').textContent, '收藏'); assert.equal(get('open-settings').textContent, '设置');
+  assert.equal(get('open-collection').textContent, '列表'); assert.equal(get('open-settings').textContent, '设置');
   for (const id of ['open-collection', 'open-settings']) await get(id).events.click();
   assert.deepEqual(opened, ['chrome-extension://test/src/options.html#reading-list', 'chrome-extension://test/src/options.html#settings']);
   assert.equal(get('setup-welcome').hidden, true);
   assert.equal(get('capture-editor').hidden, false);
   assert.equal(sent[0].type, 'POPUP_STATUS');
   assert.equal(get('capture-remark').value, 'Existing remark');
+  get('capture-remark').value = '字'.repeat(141);
+  const beforeLimit = sent.length; await get('capture').events.click();
+  assert.equal(sent.length, beforeLimit); assert.match(get('capture-status').textContent, /140/);
+  get('capture-remark').value = 'Existing remark';
   assert.equal(get('capture-tag-options').children.length, 1);
   get('capture-new-tag').value = 'Research'; get('capture-new-tag').events.input();
   assert.equal(get('capture-tag-options').children[0].children[1].textContent, 'Research');
   get('capture-new-tag').value = ''; get('capture-new-tag').events.input();
-  await get('capture').events.click(); assert.deepEqual(sent.at(-1), { type: 'CAPTURE_PAGE', expectedUrl: 'https://example.com/a', metadata: {} }); assert.match(get('capture-status').textContent, /本机收藏/);
+  await get('capture').events.click(); assert.deepEqual(sent.at(-1), { type: 'CAPTURE_PAGE', expectedUrl: 'https://example.com/a', metadata: {} }); assert.match(get('capture-status').textContent, /数据库/);
   get('capture-new-tag').value = 'New tag'; await get('capture-add-tag').events.click();
   get('capture-remark').value = 'Question for review';
   result = { ok: true, saved: true, synced: true }; await get('capture').events.click(); assert.match(get('capture-status').textContent, /数据库/);
@@ -54,11 +60,11 @@ test('icon popup offers collection and settings, and captures through the truste
   const requestCount = sent.length;
   await get('capture').events.click();
   assert.equal(sent.length, requestCount, 'duplicate click must not submit another capture');
-  finishSave({ ok: true, saved: true, synced: false, error: 'Service unavailable' });
+  finishSave({ ok: false, saved: false, synced: false, error: 'Network problem, save failed.' });
   await saving;
-  assert.equal(get('capture').textContent, '收藏成功');
-  assert.match(get('capture-status').textContent, /尚未同步到数据库/);
-  assert.equal(get('capture-status').getAttribute('data-state'), 'local');
+  assert.equal(get('capture').textContent, '重新收藏');
+  assert.match(get('capture-status').textContent, /网络问题、保存失败/);
+  assert.equal(get('capture-status').getAttribute('data-state'), 'error');
   assert.equal(get('capture-remark').disabled, false);
   assert.ok(html.indexOf('id="capture-status"') < html.indexOf('class="popup-nav"'));
   result = { ok: false, error: 'This page cannot be saved. Open an HTTP(S) article or video page and try again.' };
@@ -71,13 +77,25 @@ test('icon popup offers collection and settings, and captures through the truste
   result = { ok: true, saved: true, synced: true }; await get('capture').events.click();
   assert.equal(get('capture').textContent, '收藏成功');
   assert.equal(get('capture-status').getAttribute('data-state'), 'success');
+  get('capture-reference').checked = true; get('capture-reference').events.change();
+  get('capture-type').value = 'tool'; get('capture-starred').checked = true;
+  await get('capture').events.click();
+  assert.deepEqual(sent.at(-1).metadata, { purpose: 'reference', contentType: 'tool', starred: true });
+  assert.match(get('capture-status').textContent, /已保存为资料/);
+  assert.equal(get('capture-status').children.at(-1)?.textContent, '查看列表');
+  result = { ok: false, error: 'Network problem, save failed.' };
+  get('capture-starred').checked = false; await get('capture').events.click();
+  assert.deepEqual(sent.at(-1).metadata, { starred: false });
+  assert.equal(get('capture-organization').disabled, false);
+  assert.equal(get('capture-starred').checked, false, 'failed input remains in the open form for manual retry');
+  assert.equal(get('capture-starred').disabled, false);
 });
 
 
 test('unconfigured, rejected and unreachable connections never expose the capture editor', async t => {
   const original = { chrome: globalThis.chrome, document: globalThis.document, window: globalThis.window };
   t.after(() => Object.assign(globalThis, original));
-  for (const [index, status] of [{ ok: true, connected: false }, { ok: false, error: 'PAIR_REQUIRED' }, new Error('Unavailable')].entries()) {
+  for (const [index, status] of [{ ok: true, connected: false, localOnly: true }, { ok: false, error: 'PAIR_REQUIRED' }, new Error('Unavailable')].entries()) {
     const elements = new Map(), sent = [], opened = [];
     const get = id => {
       if (!elements.has(id)) elements.set(id, { hidden: id === 'capture-editor', value: '', events: {}, addEventListener(name, fn) { this.events[name] = fn; } });

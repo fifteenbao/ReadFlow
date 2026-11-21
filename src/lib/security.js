@@ -5,6 +5,10 @@ export function safeErrorMessage(error) {
 
 const secretParameters = new Set(['access_token', 'refresh_token', 'id_token', 'token', 'api_key', 'apikey',
   'client_secret', 'password', 'passwd', 'session_id', 'sessionid', 'authorization', 'x-amz-signature']);
+export function normalizeArticleUrl(value) {
+  if (!isSafeArticleUrl(value)) return null;
+  return new URL(value).href;
+}
 export function isSafeArticleUrl(value) {
   if (typeof value !== 'string' || value.length > 8192 || /[\u0000-\u0020\u007f]/.test(value)) return false;
   try {

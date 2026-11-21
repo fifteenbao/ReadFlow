@@ -1,12 +1,38 @@
+import { PURPOSES, CONTENT_TYPES, ORGANIZATION_SOURCES } from './organization.js';
+import { isFolderId } from './folders.js';
 import { SafeError } from './security.js';
 
 export const CAPTURE_FIELDS = Object.freeze({ 标签: 4, 备注: 1 });
 export const MAX_TAG_LENGTH = 50;
-export const MAX_REMARK_LENGTH = 2000;
+export const MAX_REMARK_LENGTH = 140;
+export const noteLength = text => [...text].length;
 export function normalizeCaptureMetadata(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).some(key => !['tags', 'remark'].includes(key))) throw new SafeError('Invalid capture metadata.');
+      Object.keys(value).some(key => !['tags', 'remark', 'purpose', 'contentType', 'starred', 'organizationSources', 'folderId'].includes(key))) throw new SafeError('Invalid capture metadata.');
   const result = {};
+  for (const [key, values] of [['purpose', PURPOSES], ['contentType', CONTENT_TYPES]]) {
+    if (Object.hasOwn(value, key)) {
+      if (!values.includes(value[key])) throw new SafeError('Invalid capture metadata.');
+      result[key] = value[key];
+    }
+  }
+  if (Object.hasOwn(value, 'starred')) {
+    if (typeof value.starred !== 'boolean') throw new SafeError('Invalid capture metadata.');
+    result.starred = value.starred;
+  }
+  if (Object.hasOwn(value, 'organizationSources')) {
+    const sources = value.organizationSources;
+    if (!sources || typeof sources !== 'object' || Array.isArray(sources) ||
+        Object.keys(sources).some(key => !['purpose', 'contentType', 'starred'].includes(key)) ||
+        Object.values(sources).some(source => !ORGANIZATION_SOURCES.includes(source))) {
+      throw new SafeError('Invalid capture metadata.');
+    }
+    result.organizationSources = { ...sources };
+  }
+  if (Object.hasOwn(value, 'folderId')) {
+    if (value.folderId !== null && !isFolderId(value.folderId)) throw new SafeError('Invalid folder.');
+    result.folderId = value.folderId;
+  }
   if (Object.hasOwn(value, 'tags')) {
     if (!Array.isArray(value.tags) ||
         value.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.trim().length > MAX_TAG_LENGTH || /[\u0000-\u001f\u007f]/.test(tag))) {
@@ -15,7 +41,7 @@ export function normalizeCaptureMetadata(value = {}) {
     result.tags = [...new Set(value.tags.map(tag => tag.trim().normalize('NFC')))];
   }
   if (Object.hasOwn(value, 'remark')) {
-    if (typeof value.remark !== 'string' || value.remark.length > MAX_REMARK_LENGTH || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.remark)) throw new SafeError('Remarks must contain at most 2000 characters.');
+    if (typeof value.remark !== 'string' || noteLength(value.remark) > MAX_REMARK_LENGTH || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.remark)) throw new SafeError('Remarks must contain at most 140 characters.');
     result.remark = value.remark;
   }
   return result;

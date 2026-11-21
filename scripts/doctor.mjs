@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { validateHostConfig } from '../connector/host-config.js';
+import { validateHostConfig } from '../server/host-config.js';
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 2 || args[0] !== '--config')) throw new Error('Usage: npm run doctor -- [--config /private/connection.json]');
 if (Number(process.versions.node.split('.')[0]) < 22 || Number(process.versions.node.split('.')[0]) === 22 && Number(process.versions.node.split('.')[1]) < 13) throw new Error('Node.js 22.13+ is required for development tools.');

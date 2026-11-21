@@ -25,9 +25,11 @@ test('extension archives contain only installable assets, default offline and pr
     names.push(zip.subarray(offset + 30, offset + 30 + size).toString());
     offset += 30 + size + bytes;
   }
-  for (const module of ['batch', 'bitable', 'api-policy', 'notifications', 'messages', 'csv']) {
+  for (const module of ['batch', 'csv', 'database-runtime', 'http', 'host-config']) {
     assert.equal(names.includes(`src/lib/${module}.js`), false, `backend module ${module} must not ship to Chrome`);
   }
+  assert.equal(names.includes('src/lib/table-url.js'), false);
+  assert.equal(names.includes('src/lib/reminder-schedule.js'), false);
   assert.ok(names.includes('manifest.json')); assert.ok(names.includes('src/service-worker.js'));
   assert.equal(names.some(name => /private|connector|test|config\.json|(?:^|\/)\./.test(name)), false);
   const connected = await buildExtension({ baseUrl: 'https://connection.example.com/readflow/', outputRoot });
@@ -40,14 +42,14 @@ test('extension archives contain only installable assets, default offline and pr
   }
 });
 
-test('offline installed worker saves captures and settings without a connection or error badge', async t => {
+test('unconfigured worker rejects capture even with a legacy local-only preference', async t => {
   const original = { chrome: globalThis.chrome, fetch: globalThis.fetch };
   t.after(() => Object.assign(globalThis, original));
   const outputRoot = await mkdtemp(join(tmpdir(), 'readflow-offline-'));
   t.after(() => rm(outputRoot, { recursive: true, force: true }));
   await writeFile(join(outputRoot, 'package.json'), '{"type":"module"}');
   const built = await buildExtension({ outputRoot });
-  const local = {}, badges = [], titles = [], alarms = new Map();
+  const local = { localCaptureMode: true }, badges = [], titles = [], alarms = new Map();
   globalThis.fetch = () => assert.fail('offline must not fetch');
   globalThis.chrome = {
     storage: { local: area(local) },
@@ -61,28 +63,24 @@ test('offline installed worker saves captures and settings without a connection 
     { id: 'test', frameId: 0, url: chrome.runtime.getURL('src/options.html') }, resolve));
   const popupStatus = await new Promise(resolve => chrome.runtime.onMessage.emit({ type: 'POPUP_STATUS' },
     { id: 'test', frameId: 0, url: chrome.runtime.getURL('src/popup.html') }, resolve));
-  assert.deepEqual(popupStatus, { ok: true, connected: false, localOnly: false });
+  assert.deepEqual(popupStatus, { ok: true, connected: false });
   chrome.runtime.onStartup.emit();
   await send({ type: 'CONNECTION_STATUS' });
   chrome.action.onClicked.emit({ id: 1, title: 'A video', url: 'https://example.com/video' });
   await send({ type: 'CONNECTION_STATUS' });
-  assert.equal(local.items.length, 1);
-  assert.equal(badges.at(-1), '✓');
-  assert.match(titles.at(-1), /Saved locally/);
-  chrome.action.onClicked.emit({ id: 1, title: 'A video', url: 'https://example.com/video' });
-  await send({ type: 'CONNECTION_STATUS' });
-  assert.equal(local.items.length, 1);
-  assert.equal(badges.at(-1), '✓');
-  assert.equal((await send({ type: 'SET_READ', id: local.items[0].id, read: true })).ok, true);
-  assert.equal(local.items[0].read, true);
-  assert.equal((await send({ type: 'SAVE_SETTINGS', settings: { language: 'zh' } })).ok, true);
-  assert.equal(local.settings.language, 'zh'); assert.equal(badges.includes('!'), false);
-  assert.equal(local.knowledgeSync.enabled, false);
+  assert.deepEqual(local.items || [], []);
+  chrome.tabs.query = async () => [{ title: 'A video', url: 'https://example.com/video' }];
+  for (const type of ['CAPTURE_PAGE', 'CAPTURE_CONTEXT']) {
+    const result = await new Promise(resolve => chrome.runtime.onMessage.emit({ type },
+      { id: 'test', frameId: 0, url: chrome.runtime.getURL('src/popup.html') }, resolve));
+    assert.equal(result.ok, false); assert.match(result.error, /Connect your library/);
+  }
+  assert.deepEqual(local.items || [], []);
   for (const url of ['chrome://extensions', 'about:blank', undefined]) {
     chrome.action.onClicked.emit({ id: 2, url });
     await send({ type: 'CONNECTION_STATUS' });
     assert.equal(badges.at(-1), '!');
     assert.match(titles.at(-1), /This page cannot be saved/);
-    assert.equal(local.items.length, 1);
+    assert.deepEqual(local.items || [], []);
   }
 });

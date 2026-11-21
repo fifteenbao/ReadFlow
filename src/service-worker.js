@@ -1,11 +1,13 @@
 import { readingNote } from './lib/reading-note.js';
 import { requestPairing, getPairingStatus } from './lib/pairing-client.js';
 import { SafeError, safeErrorMessage } from './lib/security.js';
-import { getItems, setItems, setSettings, setRead, setReadingStatus, addItem, deleteItem, disconnectCollection } from './lib/storage.js';
+import { getItems, setItems, setSettings, setRead, setReadingStatus, prepareCapture, deleteItem, disconnectCollection } from './lib/storage.js';
 import { callKnowledge, mergeKnowledge } from './lib/knowledge.js';
-import { callConnection, connectionStatus, pendingDelivery, resolveDelivery } from './lib/connection.js';
+import { callConnection, connectionStatus } from './lib/connection.js';
+import { organization, inferContentType } from './lib/organization.js';
 import { normalizeCaptureMetadata } from './lib/capture-metadata.js';
-import { isSafeArticleUrl } from './lib/security.js';
+import { libraryRecordId, libraryBase, isLibraryDeleted } from './lib/library-binding.js';
+import { isSafeArticleUrl, normalizeArticleUrl } from './lib/security.js';
 
 let queue = Promise.resolve();
 function enqueue(work) {
@@ -18,22 +20,24 @@ async function reportError(error) {
   await chrome.action.setBadgeBackgroundColor({ color: '#9f401f' });
   await chrome.action.setTitle({ title: safeErrorMessage(error) + ' — Right-click ReadFlow to open Settings.' });
 }
+// Refresh only acknowledged records; never replay locally pending captures or edits.
+const acknowledgedItems = items => items.filter(item => libraryRecordId(item) && !isLibraryDeleted(item)).map(({ metadataUpdate, ...item }) => item);
+async function requireCaptureConnection() {
+  const { collectionIdentity } = await chrome.storage.local.get('collectionIdentity');
+  if (!collectionIdentity || !(await getPairingStatus()).approved) throw new SafeError('Connect your library in Settings before saving.');
+}
 async function syncReadingLibrary() {
   try {
-    const result = await callKnowledge('sync', { items: await getItems() });
+    const result = await callKnowledge('sync', { items: acknowledgedItems(await getItems()) });
     if (result.enabled) {
       const merged = mergeKnowledge(await getItems(), result);
       await setItems(merged);
-      if (merged.some(item => item.metadataUpdate && !item.feishuDeleted)) throw new SafeError('Tags or remarks are still pending. Check the ReadFlow service before retrying.');
+      if (merged.some(item => item.metadataUpdate && !isLibraryDeleted(item))) throw new SafeError('Tags or remarks are still pending. Check the ReadFlow service before retrying.');
     }
-    const error = result.notifications?.error || null;
-    await chrome.storage.local.set({ knowledgeSync: { enabled: result.enabled, at: Date.now(), error,
-      tagOptions: result.captureMetadata?.tagOptions || [] } });
-    if (error) await reportError(new SafeError(error));
-    else {
-      await chrome.action.setBadgeText({ text: '' });
-      await chrome.action.setTitle({ title: 'ReadFlow — Home, Collection and Settings' });
-    }
+    await chrome.storage.local.set({ knowledgeSync: { enabled: result.enabled, at: Date.now(), error: null,
+      folders: result.folders, tagOptions: result.captureMetadata?.tagOptions || [] } });
+    await chrome.action.setBadgeText({ text: '' });
+    await chrome.action.setTitle({ title: 'ReadFlow — Home, Collection and Settings' });
     return result;
   } catch (error) {
     const { knowledgeSync } = await chrome.storage.local.get('knowledgeSync');
@@ -47,9 +51,8 @@ async function initializeAlarms() {
   for (const alarm of await chrome.alarms.getAll()) {
     if (alarm.name.startsWith('review:')) await chrome.alarms.clear(alarm.name);
   }
-  await chrome.storage.local.remove('reviews');
+  await chrome.storage.local.remove(['reviews', 'localCaptureMode']);
   if (!(await chrome.alarms.get('knowledge-sync'))) await chrome.alarms.create('knowledge-sync', { periodInMinutes: 15 });
-  await chrome.alarms.clear('daily-reading');
 }
 chrome.runtime.onInstalled.addListener((details = {}) => {
   if (details.reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('src/options.html') + '#settings' });
@@ -81,17 +84,35 @@ async function capturePage(tab, metadata = {}) {
     const error = new SafeError('This page cannot be saved. Open an HTTP(S) article or video page and try again.');
     await reportError(error); throw error;
   }
-  try { await addItem({ url: tab.url, title: tab.title, metadata }); }
-  catch (error) { await reportError(error); throw error; }
-  await showCaptureFeedback('Saved locally', 'Checking reading sync…');
+  await requireCaptureConnection();
+  const previous = await getItems();
+  // Construct in memory only. Nothing is stored until the database acknowledges it.
+  const candidate = prepareCapture(previous, { url: tab.url, title: tab.title, metadata });
+  const submitted = [candidate, ...acknowledgedItems(previous).filter(item => item.id !== candidate.id)];
   try {
-    const result = await syncReadingLibrary();
-    const error = result.notifications?.error || null;
-    await showCaptureFeedback('Saved to ReadFlow', error || (result.enabled ? 'Synced with the ReadFlow database.' : 'Saved locally. Connect ReadFlow to back up this capture.'), !!error);
-    return { ok: true, saved: true, synced: result.enabled === true, error };
+    if (['purpose', 'contentType', 'starred', 'folderId'].some(key => Object.hasOwn(metadata, key))) {
+      const health = await callConnection('health');
+      if (!health.capabilities?.organization) throw new SafeError('Update the ReadFlow server to support purposes, types and stars.');
+      if (Object.hasOwn(metadata, 'folderId') && !health.capabilities?.folders) throw new SafeError('Update the ReadFlow server to manage folders.');
+    }
+    const result = await callKnowledge('sync', { items: submitted });
+    const binding = result.bindings?.find(value => value.id === candidate.id);
+    if (!result.enabled || !binding || !result.articles?.some(value => value.recordId === binding.recordId) ||
+        candidate.metadataUpdate && !result.metadataBindings?.some(value => value.id === candidate.id && value.editId === candidate.metadataUpdate.id)) {
+      throw new SafeError('Save was not confirmed by the database. Refresh the library before retrying.');
+    }
+    const confirmed = mergeKnowledge(submitted, result);
+    const legacy = previous.filter(item => !submitted.some(sent => sent.id === item.id) &&
+      !confirmed.some(saved => saved.url === item.url && libraryRecordId(saved)));
+    await setItems([...confirmed, ...legacy]);
+    await chrome.storage.local.set({ knowledgeSync: { enabled: true, at: Date.now(), error: null, folders: result.folders, tagOptions: result.captureMetadata?.tagOptions || [] } });
+    await showCaptureFeedback('Saved to ReadFlow', 'Saved to the ReadFlow database.');
+    return { ok: true, saved: true, synced: true };
   } catch (error) {
-    await showCaptureFeedback('Saved locally — sync failed', safeErrorMessage(error), true);
-    return { ok: true, saved: true, synced: false, error: safeErrorMessage(error) };
+    const detail = safeErrorMessage(error);
+    const message = detail.includes('Connection failed or timed out') ? 'Network problem, save failed.' : detail;
+    await showCaptureFeedback('Save failed', message, true);
+    return { ok: false, saved: false, synced: false, error: message };
   }
 }
 // Fallback for builds without a popup; the shipped action opens popup.html.
@@ -107,15 +128,29 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id || sender.frameId !== undefined && sender.frameId !== 0 || !fromOptions && !fromPopup) return;
   if (fromPopup && !['CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'POPUP_STATUS'].includes(message?.type)) return;
   if (fromOptions && ['CAPTURE_PAGE', 'CAPTURE_CONTEXT'].includes(message?.type)) return;
-  if (!['POPUP_STATUS', 'CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'SET_STATUS', 'SET_READ', 'DELETE_ITEM', 'SAVE_SETTINGS', 'CONNECTION_STATUS', 'SYNC', 'PENDING', 'RESOLVE_PENDING', 'VALIDATE_CONNECTION', 'DISCONNECT', 'PAIR_REQUEST', 'PAIR_STATUS', 'EXPORT_CSV'].includes(message?.type)) return;
+  if (!['POPUP_STATUS', 'CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'UPDATE_METADATA', 'CREATE_FOLDER', 'SET_STATUS', 'SET_READ', 'DELETE_ITEM', 'SAVE_SETTINGS', 'CONNECTION_STATUS', 'SYNC', 'VALIDATE_CONNECTION', 'DISCONNECT', 'PAIR_REQUEST', 'PAIR_STATUS', 'EXPORT_CSV'].includes(message?.type)) return;
   if (!message || typeof message !== 'object' || JSON.stringify(message).length > 8192) { reply({ ok: false, error: 'Invalid request.' }); return; }
   enqueue(async () => {
+    if (message.type === 'CREATE_FOLDER') {
+      await requireCaptureConnection();
+      const current = (await chrome.storage.local.get('knowledgeSync')).knowledgeSync || {};
+      if (!Array.isArray(current.folders)) throw new SafeError('Update the ReadFlow server and refresh the library to manage folders.');
+      const result = await callConnection('folders', { name: message.name, parentId: message.parentId });
+      await chrome.storage.local.set({ knowledgeSync: { ...current, folders: result.folders } });
+      return { ok: true, folderId: result.folderId };
+    }
     if (message.type === 'EXPORT_CSV') return callConnection('csv');
     if (message.type === 'POPUP_STATUS') {
-      const { collectionIdentity, localCaptureMode } = await chrome.storage.local.get(['collectionIdentity', 'localCaptureMode']);
+      const { collectionIdentity } = await chrome.storage.local.get('collectionIdentity');
       const pair = await getPairingStatus();
-      if (!collectionIdentity || !pair.approved) return { ok: true, connected: false, localOnly: localCaptureMode === true };
-      return { ok: true, connected: true }; // A prior pairing permits capture even while the service is offline.
+      if (!collectionIdentity || !pair.approved) return { ok: true, connected: false };
+      return { ok: true, connected: true }; // Saving still requires a live database acknowledgement.
+    }
+    if (message.type === 'UPDATE_METADATA') {
+      if (Object.keys(message).some(key => !['type', 'id', 'metadata'].includes(key))) throw new SafeError('Invalid capture request.');
+      const item = (await getItems()).find(item => item.id === message.id && !isLibraryDeleted(item));
+      if (!libraryRecordId(item)) throw new SafeError('Refresh the library before editing this item.');
+      return capturePage({ url: item.url, title: item.title }, normalizeCaptureMetadata(message.metadata));
     }
     if (message.type === 'CAPTURE_PAGE') {
       if (Object.keys(message).some(key => !['type', 'metadata', 'expectedUrl'].includes(key))) throw new SafeError('Invalid capture request.');
@@ -125,31 +160,36 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return capturePage(tab, metadata);
     }
     if (message.type === 'CAPTURE_CONTEXT') {
+      await requireCaptureConnection();
       if (Object.keys(message).some(key => key !== 'type')) throw new SafeError('Invalid capture request.');
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!isSafeArticleUrl(tab?.url)) throw new SafeError('This page cannot be saved. Open an HTTP(S) article or video page and try again.');
+      await syncReadingLibrary();
       const items = await getItems();
-      const item = items.find(item => item.url === tab.url && !item.feishuDeleted);
+      const href = normalizeArticleUrl(tab.url);
+      const item = items.find(item => !isLibraryDeleted(item) && (item.url === href || normalizeArticleUrl(item.url) === href));
       const { knowledgeSync } = await chrome.storage.local.get('knowledgeSync');
-      return { ok: true, url: tab.url, title: tab.title || tab.url, tags: item?.tags || [], remark: readingNote(item),
+      const inferredContentType = inferContentType(tab.url);
+      const current = item ? organization(item) : { purpose: 'later', contentType: inferredContentType, starred: false };
+      return { ok: true, existing: !!item, ...current, inferredContentType, url: tab.url, title: item?.title || tab.title || tab.url, tags: item?.tags || [], remark: readingNote(item),
         tagOptions: [...new Set([...(item?.tags || []), ...(knowledgeSync?.tagOptions || []), ...items.flatMap(item => item.tags || [])])] };
     }
     if (['SET_READ', 'SET_STATUS', 'DELETE_ITEM'].includes(message.type) && (typeof message.id !== 'string' || message.id.length > 512)) throw new SafeError('Invalid item ID.');
-    if (message.type === 'DISCONNECT') return disconnectCollection();
-    if (message.type === 'PAIR_REQUEST') return { ok: true, ...await requestPairing(message.connectionUrl) };
+    if (message.type === 'DISCONNECT') { await chrome.storage.local.remove('pendingConnectionSetup'); return disconnectCollection(); }
+    if (message.type === 'PAIR_REQUEST') {
+      const pair = await requestPairing(message.connectionUrl);
+      const { pendingConnectionSetup } = await chrome.storage.local.get('pendingConnectionSetup');
+      await chrome.storage.local.set({ pendingConnectionSetup: { endpoint: message.connectionUrl, ...pair,
+        startedAt: pendingConnectionSetup?.pairId === pair.pairId ? pendingConnectionSetup.startedAt : Date.now() } });
+      return { ok: true, ...pair };
+    }
     if (message.type === 'PAIR_STATUS') return { ok: true, ...await getPairingStatus() };
     if (message.type === 'VALIDATE_CONNECTION') {
-      return { ok: true, ...await callConnection('health', message.tableUrl !== undefined ? { tableUrl: message.tableUrl } : {}, { pinIdentity: false, provider: message.provider, endpoint: message.connectionUrl }) };
+      return { ok: true, ...await callConnection('health', {}, { pinIdentity: false, endpoint: message.connectionUrl }) };
     }
-    if (message.type === 'SAVE_SETTINGS') return { ok: true, settings: await setSettings(message.settings) };
-    if (message.type === 'CONNECTION_STATUS') return { ok: true, ...await callConnection('health', message.tableUrl !== undefined ? { tableUrl: message.tableUrl } : {}, { provider: message.provider, endpoint: message.connectionUrl }) };
+    if (message.type === 'SAVE_SETTINGS') { const settings = await setSettings(message.settings); await chrome.storage.local.remove('pendingConnectionSetup'); return { ok: true, settings }; }
+    if (message.type === 'CONNECTION_STATUS') return { ok: true, ...await callConnection('health', {}, { endpoint: message.connectionUrl }) };
     if (message.type === 'SYNC') { await syncReadingLibrary(); return { ok: true }; }
-    if (message.type === 'PENDING') return { ok: true, pending: await pendingDelivery() };
-    if (message.type === 'RESOLVE_PENDING') {
-      await resolveDelivery(message.uuid, message.outcome);
-      await chrome.storage.local.remove('knowledgeSync');
-      return { ok: true };
-    }
     if (message.type === 'SET_STATUS') {
       await setReadingStatus(message.id, message.status);
     } else if (message.type === 'SET_READ') {
@@ -157,7 +197,11 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       await setRead(message.id, message.read);
     } else {
       const item = (await getItems()).find(item => item.id === message.id);
-      if (item?.feishuRecordId) throw new SafeError('Database item deletion is not available in this view.');
+      const recordId = libraryRecordId(item);
+      if (recordId && !isLibraryDeleted(item)) {
+        const result = await callConnection('delete', { recordId, base: libraryBase(item) });
+        if (result.deleted !== true || result.recordId !== recordId) throw new SafeError('Deletion was not confirmed. Refresh the library before retrying.');
+      }
       await deleteItem(message.id);
     }
     return { ok: true };

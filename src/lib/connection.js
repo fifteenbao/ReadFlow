@@ -1,23 +1,23 @@
 import { signConnectionRequest } from './pairing-client.js';
 import { cleanDiagnostic, formatDiagnostic } from './diagnostics.js';
-import { parseTableUrl } from './table-url.js';
 import { storedEndpoint, endpointValue, endpointPermission, collectionArchiveKey } from './endpoint.js';
 import { SafeError, readJsonResponse } from './security.js';
 import { parseConnectionUrl } from './connection-url.js';
-const actions = new Set(['health', 'sync', 'read', 'pending', 'resolve', 'preferences', 'csv']);
+import { isFolderId, validFolders } from './folders.js';
+import { LIBRARY_ITEM_LIMIT } from './library-limits.js';
+const actions = new Set(['health', 'sync', 'read', 'delete', 'folders', 'preferences', 'csv']);
 export const validAccessKey = value => typeof value === 'string' && /^[A-Za-z0-9_-]{32,512}$/.test(value);
 const validIdentity = value => value && /^[A-Za-z0-9.@_:-]{1,254}$/.test(value.connectionId || '') && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(value.base || '');
 const sameIdentity = (a, b) => a.connectionId === b.connectionId && a.base === b.base;
 
 export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermission, authentication = 'paired', signRequest = signConnectionRequest } = {}) {
-  return async (action, payload = {}, { accessKey, pinIdentity = true, provider, endpoint } = {}) => {
+  return async (action, payload = {}, { accessKey, pinIdentity = true, endpoint } = {}) => {
     if (!actions.has(action)) throw new SafeError('Unsupported connection operation.');
     const local = storage || chrome.storage.local;
     const stored = await local.get(['connectionEndpoint', 'connectionAccessKey', 'collectionIdentity', 'connectionBaseUrl', 'connectionProvider', 'collectionArchives']);
     const selectedUrl = endpoint !== undefined ? endpointValue(endpoint) : baseUrl !== undefined ? endpointValue(baseUrl) : storedEndpoint(stored);
     if (!selectedUrl) {
       if (['health', 'sync', 'preferences'].includes(action)) return { ok: true, connected: false, enabled: false };
-      if (action === 'pending') return { ok: true, pending: null };
       throw new SafeError('Configure a connection before updating linked records.');
     }
     const target = parseConnectionUrl(selectedUrl).baseUrl;
@@ -32,8 +32,7 @@ export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermiss
       key = accessKey || (!switched ? stored.connectionAccessKey : '');
       if (!validAccessKey(key)) throw new SafeError(key ? formatDiagnostic({ code: 'KEY_INVALID', stage: 'identity' }) : 'Enter the connection access key in Settings.');
     }
-    const selectedProvider = provider || stored.connectionProvider || (authentication === 'bearer' ? 'feishu' : 'database');
-    if (!['database', 'feishu'].includes(selectedProvider)) throw new SafeError('Invalid storage provider.');
+    const selectedProvider = 'database';
     const body = JSON.stringify({ ...payload, provider: selectedProvider, ...(identity ? { expectedIdentity: identity } : {}) });
     if (new TextEncoder().encode(body).length > 20 * 1024 * 1024) throw new SafeError('Sync request exceeds 20 MiB.');
     const authHeaders = authentication === 'bearer' ? { Authorization: `Bearer ${key}` } : await signRequest(target, `${target}v1/${action}`, body, local);
@@ -53,37 +52,42 @@ export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermiss
     const result = await readJsonResponse(response, 20 * 1024 * 1024);
     if (!response.ok || result.ok !== true) throw new SafeError(cleanDiagnostic(result.diagnostic) ? formatDiagnostic(result.diagnostic) : 'Connection operation failed. Check its authorization, permissions and private logs.');
     if (result.protocolVersion !== 1 || !validIdentity(result.identity)) throw new SafeError('Unsupported or invalid connection response.');
-    if (identity && !sameIdentity(identity, result.identity)) throw new SafeError('Connection account or table differs from this collection. Disconnect in Settings before reassociating.');
-    if (action === 'health' && (result.configuration?.storageProvider || 'database') !== selectedProvider) throw new SafeError('The connection does not match the selected storage provider.');
+    if (identity && !sameIdentity(identity, result.identity)) throw new SafeError('Connection account or library differs from this collection. Disconnect in Settings before reassociating.');
+    if (action === 'health' && (result.configuration?.storageProvider || 'database') !== selectedProvider) throw new SafeError('The connection does not match the ReadFlow database provider.');
     if (action === 'health' && (result.connected !== true || result.capabilities?.tableRead !== true || result.capabilities?.tableWrite !== true)) {
-      throw new SafeError('This connection does not support table reading and writing.');
+      throw new SafeError('This connection does not support library reading and writing.');
+    }
+    if (action === 'folders' && (!validFolders(result.folders) || !result.folders.some(folder => folder.id === result.folderId))) {
+      throw new SafeError('Folder creation was not confirmed.');
     }
     if (action === 'sync') {
-      if (result.enabled !== true || result.base !== result.identity.base || !Array.isArray(result.bindings) || !Array.isArray(result.articles) || !Array.isArray(result.topics) ||
-          result.articles.length > 10000 || result.bindings.length > 5000 ||
+      if (result.folders !== undefined && !validFolders(result.folders)) throw new SafeError('Invalid folder snapshot.');
+      if (Array.isArray(result.articles) && result.articles.some(article => article?.folderId != null && !isFolderId(article.folderId))) {
+        throw new SafeError('Invalid folder assignment.');
+      }
+      if (result.enabled !== true || result.base !== result.identity.base || !Array.isArray(result.bindings) || !Array.isArray(result.articles) ||
+          result.bindings.length > 5000 ||
           result.bindings.some(b => typeof b?.id !== 'string' || !/^rec[A-Za-z0-9]+$/.test(b.recordId || '')) ||
-          result.articles.some(a => !/^rec[A-Za-z0-9]+$/.test(a?.recordId || '') || typeof a.read !== 'boolean' || typeof a.url !== 'string' || !Array.isArray(a.topicIds))) {
-        throw new SafeError('Invalid table snapshot; local data was preserved.');
+          result.articles.some(a => !/^rec[A-Za-z0-9]+$/.test(a?.recordId || '') || typeof a.read !== 'boolean' || typeof a.url !== 'string')) {
+        throw new SafeError('Invalid library snapshot; local data was preserved.');
+      }
+      if (result.articles.length > LIBRARY_ITEM_LIMIT) {
+        throw new SafeError(`Library is full (${LIBRARY_ITEM_LIMIT} items). Delete some items before saving new ones.`);
       }
       if (result.articles.some(article => article.tags !== undefined && (!Array.isArray(article.tags) || article.tags.some(tag => typeof tag !== 'string' || tag.length > 1000)) ||
           article.remark !== undefined && (typeof article.remark !== 'string' || article.remark.length > 128002))) {
         throw new SafeError('Invalid capture metadata snapshot; local edits were preserved.');
+      }
+      for (const article of result.articles) {
+        if (article.purpose !== undefined && !['later', 'reference'].includes(article.purpose) ||
+            article.contentType !== undefined && !['article', 'video', 'tool', 'web'].includes(article.contentType) ||
+            article.starred !== undefined && typeof article.starred !== 'boolean') throw new SafeError('Invalid capture metadata snapshot; local edits were preserved.');
       }
       if (result.captureMetadata !== undefined && (!result.captureMetadata || !Array.isArray(result.captureMetadata.tagOptions) ||
           result.captureMetadata.tagOptions.some(tag => typeof tag !== 'string' || tag.length > 50))) throw new SafeError('Invalid capture tag options.');
       if (result.metadataBindings !== undefined && (!Array.isArray(result.metadataBindings) || result.metadataBindings.length > 5000 ||
           result.metadataBindings.some(binding => typeof binding?.id !== 'string' || typeof binding.editId !== 'string' || binding.editId.length !== 36))) {
         throw new SafeError('Invalid metadata acknowledgement; local edits were preserved.');
-      }
-    }
-    if (payload.tableUrl !== undefined) {
-      const link = parseTableUrl(payload.tableUrl), resolved = result.resolvedTable;
-      if (!resolved || resolved.url !== link.url || resolved.base !== result.identity.base ||
-          resolved.base !== `${resolved.baseToken}/${resolved.articleTableId}` ||
-          resolved.source !== (link.kind === 'wiki' ? 'wiki-node' : link.articleTableId ? 'explicit-link' : 'configured-table') ||
-          (link.kind === 'base' && resolved.baseToken !== link.baseToken) ||
-          (link.articleTableId && resolved.articleTableId !== link.articleTableId)) {
-        throw new SafeError(formatDiagnostic({ code: 'LINK_RESPONSE_INVALID', stage: link.kind === 'wiki' ? 'wiki.resolve' : 'fields' }));
       }
     }
     if (!identity && pinIdentity) {
@@ -98,5 +102,3 @@ export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermiss
 }
 export const callConnection = createConnectionClient();
 export const connectionStatus = () => callConnection('health');
-export async function pendingDelivery() { return (await callConnection('pending')).pending; }
-export const resolveDelivery = (uuid, outcome) => callConnection('resolve', { uuid, outcome });

@@ -1,3 +1,4 @@
 export const READING_STATUSES = ['待阅读', '已读', '跳过'];
-export const isUnread = item => !item.read && item.status !== '跳过' && !item.feishuDeleted;
-export const readingStatus = item => item.status === '跳过' ? '跳过' : item.read ? '已读' : '待阅读';
+/** Prefer status; derive from read only when status is missing. */
+export const readingStatus = item => READING_STATUSES.includes(item?.status) ? item.status : item?.read ? '已读' : '待阅读';
+export const isUnread = item => readingStatus(item) === '待阅读' && item?.libraryDeleted !== true && item?.feishuDeleted !== true;

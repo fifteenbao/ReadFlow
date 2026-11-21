@@ -11,33 +11,44 @@
   <p id="popup-connection" class="connection-badge" role="status"></p>
   <section id="setup-welcome" class="setup-welcome">
     <h1 data-i18n="welcomeTitle">从这里开始收藏</h1>
-    <p data-i18n="welcomeBody">连接 ReadFlow 资料库，或先在本机体验收藏。</p>
-    <ol><li data-i18n="welcomeStep1">请 agent 准备 ReadFlow 服务与数据库。</li><li data-i18n="welcomeStep2">在设置中填写服务地址，飞书为可选配置。</li><li data-i18n="welcomeStep3">确认配对、检查并保存，收藏即可同步到数据库。</li></ol>
+    <p data-i18n="welcomeBody">完成 ReadFlow 资料库连接后即可收藏。</p>
+    <ol><li data-i18n="welcomeStep1">请 agent 准备 ReadFlow 服务与数据库。</li><li data-i18n="welcomeStep2">在设置中填写服务地址；飞书链接收录为可选。</li><li data-i18n="welcomeStep3">确认配对、检查并保存，收藏即可同步到数据库。</li></ol>
     <button id="start-setup" class="btn-primary" data-i18n="startSetup">开始连接设置</button>
-    <button id="local-capture" class="secondary-btn" data-i18n="tryLocal">先在本机收藏</button>
     <p class="field-hint" data-i18n="welcomeHelp">设置页提供可复制给 agent 的配置任务。ReadFlow 本身不提供 AI 对话。</p>
   </section>
   <section id="capture-editor" hidden>
 
-  <p id="capture-page-title" class="capture-page-title"></p>
+  <div class="capture-heading">
+    <p id="capture-page-title" class="capture-page-title"></p>
+    <label class="capture-starred"><input id="capture-starred" type="checkbox" disabled /> 星标</label>
+  </div>
+  <p class="field-hint">星标表示优先阅读或反复参考，不表示已读或质量评分。</p>
+  <fieldset id="capture-organization" disabled class="capture-organization">
+    <legend>保存用途</legend>
+    <label><input type="radio" name="purpose" id="capture-later" value="later" checked /> 稍后看</label>
+    <label><input type="radio" name="purpose" id="capture-reference" value="reference" /> 留作资料</label>
+    <p class="field-hint">稍后看：准备阅读或观看；留作资料：以后查找或使用。</p>
+    <div id="capture-type-field" hidden><label for="capture-type">内容类型</label>
+    <select id="capture-type"><option value="web">其他网页</option><option value="article">文章</option><option value="video">视频</option><option value="tool">工具</option></select></div>
+  </fieldset>
   <fieldset id="capture-tags-fieldset" disabled class="capture-tags" aria-describedby="capture-tags-hint capture-status">
     <legend data-i18n="captureTags">标签（可多选）</legend>
-    <p id="capture-tags-hint" class="field-hint" data-i18n="captureTagsHint">输入以搜索或添加标签，数量不限，每个不超过 50 字。</p>
+    <p id="capture-tags-hint" class="sr-only" data-i18n="captureTagsHint">输入以搜索或添加标签，数量不限，每个不超过 50 字。</p>
     <p id="capture-tag-count" role="status"></p>
     <div id="capture-tag-options" class="capture-tag-options"></div>
     <p id="capture-more-tags" hidden class="field-hint" data-i18n="tagMore">仅展示前 6 项，输入标签名缩小范围；其他已选标签仍会保存。</p>
     <p id="capture-tags-empty" class="field-hint" data-i18n="captureTagsEmpty">暂无标签，可在下方添加第一个标签。</p>
-    <label for="capture-new-tag" data-i18n="captureNewTag">搜索或添加标签</label>
-    <div class="capture-tag-entry"><input id="capture-new-tag" type="text" maxlength="50" autocomplete="off" aria-describedby="capture-tags-hint capture-status" /><button id="capture-add-tag" type="button" data-i18n="captureAddTag">添加</button></div>
+    <label for="capture-new-tag" class="sr-only" data-i18n="captureNewTag">搜索或添加标签</label>
+    <div class="capture-tag-entry"><input id="capture-new-tag" placeholder="搜索或添加标签" type="text" maxlength="50" autocomplete="off" aria-describedby="capture-tags-hint capture-status" /><button id="capture-add-tag" type="button" data-i18n="captureAddTag">添加</button></div>
   </fieldset>
   <label for="capture-remark" data-i18n="captureRemark">笔记</label>
-  <textarea disabled id="capture-remark" rows="3" maxlength="2000" aria-describedby="capture-remark-hint capture-status"></textarea>
-  <p id="capture-remark-hint" class="field-hint" data-i18n="captureRemarkHint">选填：为什么收藏？希望解决什么问题？</p>
+  <textarea disabled id="capture-remark" rows="3" aria-describedby="capture-remark-hint capture-status"></textarea>
+  <p id="capture-remark-hint" class="field-hint" data-i18n="captureRemarkHint">选填，最多 140 字：为什么收藏？希望解决什么问题？</p>
   <button class="btn-primary" id="capture" data-i18n="capture">收藏当前页</button>
   </section>
   <p id="capture-status" class="card-note" role="status" aria-live="polite" aria-atomic="true"></p>
   <nav class="popup-nav" aria-label="ReadFlow">
-    <button id="open-collection" data-i18n="collection">收藏</button>
+    <button id="open-collection" data-i18n="collection">列表</button>
     <button id="open-settings" data-i18n="settings">设置</button>
   </nav>
   <script type="module" src="popup.js"></script>

@@ -1,32 +1,21 @@
-# Project collaboration rules
+# ReadFlow 仓库协作规则
 
-## Scope and architecture
+安装、部署与运维见 [SETUP.md](SETUP.md)。公开功能看 [README.md](README.md)，数据和协议约定看 [架构与接口](docs/ARCHITECTURE.md)。
 
-- Before adding a hosting platform, external service, external account, recurring cloud job, deployment workflow, cost, or a different credential-management architecture, explain why it is needed, the data and trust boundaries, maintenance impact, and available choices. Obtain the user's explicit choice before implementation.
-- A request such as “connect directly to Feishu APIs” or “improve security” does not by itself authorize selecting a cloud provider or introducing an additional architectural dependency.
-- Read-only investigation, fixes within the accepted architecture, local tests, and documentation may proceed without repeated permission questions.
-- If a change cannot be completed within the accepted scope, explain the blocker and ask for the missing decision rather than silently expanding the architecture.
-- ReadFlow is a portable Chrome extension with an optional provider-neutral connection contract. Do not require a particular CLI, cloud provider, server OS, process manager, or agent product. Existing tools may implement the contract; never claim compatibility without testing their identity, task and message capabilities.
-- Public defaults have no endpoint or granted host permissions. Users may configure an HTTPS endpoint in Settings: declare HTTPS hosts as optional and request only the chosen exact host from a user gesture. A private extension build may prefill one exact HTTPS origin chosen by the operator. Keep real domains, identities and credentials out of source and public packages. Do not introduce listeners or infrastructure automatically.
-- Agent-assisted setup should inspect capabilities, configure an existing connection, validate the contract, and report missing capabilities. It must not rewrite core source or silently deploy new services.
+## 协作规则
 
-## Product boundaries
+- V1.0 之前按测试版推进，以完成产品闭环为主；不为旧扩展／旧配置／旧字段做兼容层或拒绝闸，除非直接影响当前主路径正确性。旧版兼容延后到 V1.0 后再评估。
+- 在既定范围内自主检查、修复、测试和更新文档。新增托管、外部服务或账号、定时任务、部署方式、费用或凭证架构前，说明用途、数据边界、维护影响和替代方案，取得用户明确选择。
+- 协助配置时，在已有环境中检查能力、配置连接并验收。发现缺项就报告。仅配置的任务不得改写核心代码。文档、后端或安全任务涉及现有页面时，仅解决已确认的功能或安全问题。新增页面或视觉改版须有对应需求。
+- 仅在用户明确授权时提交、打标签、推送或发布。含新改动的推送默认升 patch，同步更新 `package.json`、`manifest.json`、更新日志、文档版本和安装包。同一版本提交重试推送时沿用版本号。
+- 相关改动后运行 `npm test` 和 `npm run security`。明确验证使用模拟环境还是真实部署。日志避开授权码、令牌、密钥、含凭证的 URL 和原始第三方错误。
+- 文档以中文为主。英文更新限既有英文 README、配置与接入说明，及用户明确要求的内容。`**/*PRD*.md` 只在本地以中文维护，不提交 Git。保留 MIT 许可证和原版权声明。
 
-- Position ReadFlow as an open-source Chrome extension for saving articles, videos, and other content that takes time to understand, with the server SQLite database as the sole source of truth. No Bitable synchronization. CSV exports come from the database. Analysis belongs to an existing conversational agent on any supported conversation surface. Feishu remains an optional current link-intake channel; ReadFlow must not call model APIs or store model credentials. Approved agents may query records and append explicitly confirmed cited reviews through the separate signed agent API. Chat confirmation is attested by the trusted agent, not independently verified by ReadFlow. Retain Chrome capture and support explicitly configured Feishu private-message link intake. Do not reintroduce other spreadsheet providers. The core workflow is capture, organize, read or watch, take notes, and review related material.
-- Capture stores page titles, links, optional multi-select 标签 (no tag-count cap; preserve per-tag length and whole-request limits) and a single 笔记 (internal key remark). Preserve and combine legacy note/remark text without duplication. Explicit metadata edits may update tags and the unified note; ordinary sync must preserve database edits. CSV exports only 标题、链接、阅读状态、时间、标签、笔记、标记已读时间. Record server-side read transitions and preserve history; never fabricate missing historical read times. The collection with counted unread/read/skipped filters is the default home. Never reverse-import Bitable edits. Do not imply video downloading, transcription, automatic playback tracking, or AI knowledge synthesis unless those features are explicitly requested and implemented.
-- Public product scope is recorded in README.md. Product planning files matching **/*PRD*.md are local-only and must not be committed; docs/MVP-PRD.md may be available locally. The signed agent query/confirmed review storage contract is implemented; live Hermes integration, Chrome review UI and scheduled AI reviews remain unverified or unimplemented. State those boundaries accurately.
-- Keep reading-state synchronization. Daily unread reminders are temporarily removed: do not expose reminder controls or enable daily sending, including from old saved preferences. Retain Feishu link intake and its existing ingest task; future reminders need a separate product decision.
-- Do not add calendar booking or product-specific agent connectors. A generic adapter interface is authorized.
-- Do not add or redesign frontend pages as part of documentation, backend, or security work. Necessary changes to existing page logic should be limited to verified security or functional fixes, and their purpose should be explained.
-- Maintain Chinese as the primary documentation language. Translation requests apply only to agent-facing setup, integration and operation instructions unless the user explicitly specifies another document. Keep internal PRDs in Chinese only; do not generate English PRDs. Do not create other parallel translated documents until explicitly requested. Preserve upstream attribution and the MIT license; keep personal credentials out of examples.
+## 产品边界
 
-## Release versioning
-
-- Before every push containing new changes, increment the patch version by default (for example 0.4.1 → 0.4.2), unless the user explicitly specifies a different target version. Update package.json and manifest.json together, record the changes in CHANGELOG.md, update version references in documentation, and regenerate versioned archives before committing and pushing. A retry of the same versioned commit after a failed push must not increment the version again. Never commit, tag, push or publish without user authorization.
-- Keep manifest.json and package.json aligned. Internal edits and task iterations do not each require a version bump; the bump is required when preparing new changes for a push. This standing versioning preference does not itself authorize a push.
-
-## Verification
-
-- Run `npm test` and `npm run security` after relevant changes.
-- Never log authorization codes, access tokens, App Secrets, full credential URLs, or raw provider error payloads.
-- Report whether validation used offline mocks or an actual deployment. Do not present mocked tests as proof of live security.
+- ReadFlow 是开源 Chrome 收藏插件，服务端 SQLite 是唯一主库。先配对再收藏，数据库确认后才写入浏览器缓存。失败时提示，保留已有资料，失败的新收藏不暂存、不自动补传。响应丢失时先刷新核实。
+- 列表保留「稍后看／资料夹／全部」。打开、返回或重新聚焦时自动刷新，同一时间只刷新一次。失败展示上次获取的内容并提供重试。保留 CSV 导出，当前无 CSV 导入或资料库切换入口。
+- 普通同步保留显式编辑、旧笔记和阅读历史。新建或修改笔记限 140 个 Unicode 码点，旧长笔记完整显示。编辑须明确保存，失败输入仅保留在当前页面。标签数量不限，保留单个标签和整体请求大小限制。已读时间记录实际状态变更，缺失的历史时间保持未知。
+- 浏览器与 agent 独立配对。签名接口支持查询和追加经用户明确确认的回顾，确认由已授权 agent 如实转述。完整阅读回顾工作流仍待实现。ReadFlow 使用通用协议，模型与凭证留在用户已有的 agent 环境。
+- 保留现有可选私聊链接收录及其处理任务。日历预约、每日未读提醒、多维表格同步和特定 agent 专用接入均不在当前范围。
+- 公开包默认不预填服务地址、不预授主机权限。由用户操作授权所选的精确 HTTPS 主机。私有包可按配置预填单一 HTTPS 地址。实际服务地址、身份和凭证留在私有配置中。

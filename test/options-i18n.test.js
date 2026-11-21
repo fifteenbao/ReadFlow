@@ -30,13 +30,13 @@ test('interface defaults to Chinese and respects an explicit saved language', ()
 });
 test('Chinese diagnostics retain codes, provider details and references', () => {
   for (const code of Object.keys(messages)) {
-    const formatted = formatDiagnostic({ code, stage: 'sync.records.list', providerCode: 1254030, httpStatus: 403, reference: '12345678-1234-1234-1234-123456789abc' });
+    const formatted = formatDiagnostic({ code, stage: 'sync', providerCode: 1254030, httpStatus: 403, reference: '12345678-1234-1234-1234-123456789abc' });
     const localized = localizeError(formatted, 'zh');
     assert.notEqual(localized, formatted, code);
-    assert.match(localized, /sync\.records\.list/); assert.match(localized, /provider=1254030/);
+    assert.match(localized, /sync/); assert.match(localized, /provider=1254030/);
     assert.match(localized, /12345678-1234-1234-1234-123456789abc/);
     assert.equal(localizeError(formatted, 'en'), formatted);
   }
   assert.match(localizeError('Enter the connection access key in Settings.', 'zh'), /连接访问密钥/);
-  assert.match(localizeError('Open the target data table and copy its /base/ link including ?table=tbl…', 'zh'), /数据表 ID/);
+  assert.match(localizeError('Only the ReadFlow database provider is supported.', 'zh'), /仅支持 ReadFlow 数据库/);
 });

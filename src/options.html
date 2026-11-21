@@ -11,7 +11,7 @@
       <header class="options-head">
         <div class="brand"><span class="mark">Read<span>Flow.</span></span></div>
         <nav class="dash-nav" aria-label="ReadFlow">
-          <a id="nav-collection" href="#reading-list" data-i18n="collection">收藏</a>
+          <a id="nav-collection" href="#reading-list" data-i18n="collection">列表</a>
           <a id="nav-settings" href="#settings" data-i18n="settings">设置</a>
         </nav>
         <div class="header-language"><label for="ui-language" data-i18n="interfaceLanguage">界面语言</label><select id="ui-language" aria-describedby="ui-language-hint"><option value="en">English</option><option value="zh">简体中文</option></select></div>
@@ -19,16 +19,53 @@
         <p id="ui-language-hint" class="field-hint" data-i18n="interfaceHint">界面语言立即生效。</p>
       </header>
       <section id="reading-list" hidden>
-        <div class="section-head"><h1 class="display-h" data-i18n="collection">收藏</h1><span class="count" id="list-count"></span></div>
+        <div class="section-head"><h1 class="display-h" data-i18n="collection">列表</h1><span class="count" id="list-count"></span></div>
         <p id="home-counts" class="card-note"></p>
         <p id="home-status" class="card-note" role="status"></p>
         <a id="collection-setup" href="#settings" data-i18n="startSetup">开始连接设置</a>
-        <nav class="collection-tabs" aria-label="阅读状态">
+        <nav class="collection-tabs" aria-label="收藏用途">
+          <button id="view-later" type="button" aria-pressed="true">稍后看</button>
+          <button id="view-reference" type="button" aria-pressed="false">资料夹</button>
+          <button id="view-all" type="button" aria-pressed="false">全部</button>
+        </nav>
+        <div id="collection-filters" class="collection-filters">
+          <label>内容类型<select id="filter-type"><option value="">全部类型</option><option value="article">文章</option><option value="video">视频</option><option value="tool">工具</option><option value="web">其他网页</option></select></label>
+          <label>搜索<input id="filter-search" type="search" placeholder="标题、链接或笔记" /></label>
+          <label id="filter-status-label" hidden>阅读状态<select id="filter-status"><option value="">全部状态</option><option value="待阅读">未读</option><option value="已读">已读</option><option value="跳过">跳过</option></select></label>
+          <label class="filter-starred"><input id="filter-starred" type="checkbox" /> <span data-i18n="filterStarred">仅星标</span></label>
+          <button id="clear-filters" type="button">清除筛选</button>
+        </div>
+        <nav id="reading-status-tabs" class="collection-tabs" aria-label="阅读状态">
           <button id="filter-unread" type="button" aria-pressed="true"></button>
           <button id="filter-read" type="button" aria-pressed="false"></button>
-          <button id="filter-skip" type="button" aria-pressed="false"></button>
         </nav>
-        <div class="card list-card"><ul class="list dash-list" id="list"></ul></div>
+        <div class="library-workspace" id="library-workspace">
+          <aside class="library-sidebar" id="library-sidebar" aria-label="整理资料" hidden>
+            <section id="folder-panel" aria-labelledby="folder-heading">
+              <h2 id="folder-heading">文件夹</h2>
+              <nav id="library-folders" aria-label="文件夹"></nav>
+              <form id="folder-form" hidden>
+                <label for="folder-name" id="folder-create-label">新建文件夹</label>
+                <div class="folder-form-fields">
+                  <input id="folder-name" type="text" required aria-describedby="folder-status" />
+                  <button id="create-folder" type="submit">创建</button>
+                </div>
+              </form>
+              <p id="folder-help" class="field-hint" hidden>创建文件夹需要更新 ReadFlow 服务。</p>
+              <p id="folder-status" class="field-hint" role="status"></p>
+            </section>
+            <section aria-labelledby="tag-heading">
+              <h2 id="tag-heading">标签</h2>
+              <nav id="library-tags" class="library-tags" aria-label="标签"></nav>
+            </section>
+          </aside>
+          <div class="library-content">
+            <h2 id="folder-title" hidden></h2>
+            <div class="card list-card"><ul class="list dash-list" id="list"></ul></div>
+          </div>
+        </div>
+        <p id="refresh-status" class="notice" role="status" aria-live="polite"></p>
+        <button id="retry-refresh" type="button" hidden>重试获取资料</button>
         <p id="list-status" class="notice" role="alert"></p>
       </section>
       <section id="settings" hidden>
@@ -36,7 +73,7 @@
         <section class="card setup-guide" id="setup-guide" hidden>
           <h2 data-i18n="setupTitle">第一步：准备你的资料库</h2>
           <p class="card-note" data-i18n="setupExplanation">还没有服务地址？点击下方按钮，将任务交给你自己的 AI 助手（agent）配置。已有地址可直接填写下一栏。</p>
-          <ol class="setup-steps"><li data-i18n="setupStep1">复制配置任务，连同 ReadFlow 项目目录交给自己的 AI 助手。</li><li data-i18n="setupStep2">获得服务地址后，填写下方输入框。</li><li data-i18n="setupStep3">Step 2 连接服务器，复制指纹确认任务给 agent。</li><li data-i18n="setupStep4">agent 批准后，点击 Step 3 完成连接，即可开始收藏。</li></ol>
+          <ol class="setup-steps"><li data-i18n="setupStep1">复制配置任务，连同 ReadFlow 项目目录交给自己的 AI 助手。</li><li data-i18n="setupStep2">获得服务地址后，填写下方输入框。</li><li data-i18n="setupStep3">Step 2 连接服务器，复制指纹确认任务给 agent。</li><li data-i18n="setupStep4">将确认任务发给 agent；服务器批准后，插件自动验证并完成连接。</li></ol>
           <button id="copy-agent-task" type="button" class="save-btn" data-i18n="copyAgentTask">复制配置任务</button>
           <p id="copy-agent-status" role="status" class="notice"></p>
           <p id="agent-task-help" class="field-hint" data-i18n="agentTaskHelp">复制到你自己的 agent 会话，并提供 ReadFlow 项目目录。插件不会自动发送消息；不要在这里填写 App Secret 或令牌。</p>
@@ -48,30 +85,19 @@
         <section class="card connection-card">
           <h2 data-i18n="connection">Step 2 · 连接服务器</h2>
           <p class="card-note" data-i18n="connectionHint">填写服务地址获取指纹，再让 agent 核对并批准。</p>
-          <div class="field field-wide"><div><label class="field-label" for="connectionUrl" data-i18n="connectionUrl">连接服务地址</label><p id="endpoint-hint" class="field-hint" data-i18n="endpointHint">由 AI 助手或配置者提供的完整 HTTPS 地址，不是飞书表格链接。请保留地址中的子路径。</p></div><div class="field-control"><input id="connectionUrl" type="url" autocomplete="off" spellcheck="false" aria-describedby="endpoint-hint endpoint-error" placeholder="https://connection.example.com/readflow/" /><p id="endpoint-error" role="status" aria-live="polite" class="notice"></p></div></div>
+          <div class="field field-wide"><div><label class="field-label" for="connectionUrl" data-i18n="connectionUrl">连接服务地址</label><p id="endpoint-hint" class="field-hint" data-i18n="endpointHint">由 AI 助手或配置者提供的完整 HTTPS ReadFlow 服务地址，请保留子路径。这不是表格链接。</p></div><div class="field-control"><input id="connectionUrl" type="url" autocomplete="off" spellcheck="false" aria-describedby="endpoint-hint endpoint-error" placeholder="https://connection.example.com/readflow/" /><p id="endpoint-error" role="status" aria-live="polite" class="notice"></p></div></div>
           <div class="options-foot"><button class="save-btn" id="check-connection" data-i18n="check">连接服务器，获取指纹</button></div>
-          <div class="pairing-guide"><h2 data-i18n="pairStep">Step 3 · 确认授权并完成连接</h2><p id="pair-help" class="card-note" data-i18n="pairHint">无需手填密钥。复制确认任务给 agent；核对完整指纹并批准后，再完成连接。</p><p id="pair-status" class="notice" role="status" aria-live="polite"></p><div id="pair-details" hidden><p class="field-hint" data-i18n="fingerprintHelp">复制给配置服务器的 agent，核对完整指纹后批准本浏览器。指纹不是密钥。</p><code id="pair-fingerprint"></code><button id="copy-pair-task" type="button" class="save-btn" data-i18n="copyPairTask">复制确认任务</button><p id="copy-pair-status" class="notice" role="status"></p><details id="pair-task-preview"><summary data-i18n="taskPreview">查看任务内容</summary><textarea id="pair-task" rows="7" readonly aria-label="配对确认任务"></textarea></details></div></div>
-          <div class="options-foot"><button class="save-btn" id="save" disabled data-i18n="save">已获批准，完成连接</button><span class="saved-note" id="saved-note" role="status" data-i18n="saved">已保存</span></div>
+          <div class="pairing-guide"><h2 data-i18n="pairStep">Step 3 · 交给 agent 批准，自动连接</h2><p id="pair-help" class="card-note" data-i18n="pairHint">复制下方确认任务并发给 agent，等待服务器核对指纹并批准。保持此页打开，插件会自动完成连接，无需再次点击。</p><p id="pair-status" class="notice" role="status" aria-live="polite"></p><div id="pair-details" hidden><p class="field-hint" data-i18n="fingerprintHelp">复制给配置服务器的 agent，核对完整指纹后批准本浏览器。指纹不是密钥。</p><code id="pair-fingerprint"></code><button id="copy-pair-task" type="button" class="save-btn" data-i18n="copyPairTask">复制确认任务</button><p id="copy-pair-status" class="notice" role="status"></p><details id="pair-task-preview"><summary data-i18n="taskPreview">查看任务内容</summary><textarea id="pair-task" rows="7" readonly aria-label="配对确认任务"></textarea></details></div></div>
+          <div class="options-foot"><span class="saved-note" id="saved-note" role="status" data-i18n="saved">已保存</span></div>
 
           <p class="notice" id="auth-status" role="status" aria-live="polite"></p>
         </section>
         <details class="advanced-settings card" id="advanced-settings">
-          <summary data-i18n="advancedSettings">高级设置 · 导出与连接管理</summary>
+          <summary data-i18n="advancedSettings">高级设置 · CSV 导出</summary>
           <p class="card-note" data-i18n="advancedHint">首次连接无需填写，连接成功后按需使用。</p>
-          <h2 data-i18n="syncHeading">更新本机与资料库</h2>
-          <p class="card-note" data-i18n="syncExplanation">收藏时会自动尝试同步。断网恢复后，或列表、阅读状态不是最新时，可手动更新：上传本机待同步收藏，再获取数据库的最新资料与状态。不会导出到飞书。</p>
-          <div class="options-foot"><button class="secondary-btn" id="sync" disabled aria-describedby="sync-help" data-i18n="sync">立即更新</button></div>
-          <p class="card-note" id="sync-help"></p>
-          <p class="notice" id="sync-status" role="status" aria-live="polite"></p>
-          <div class="disconnect-section">
-            <h2 data-i18n="disconnectHeading">更换资料库</h2>
-            <button type="button" class="secondary-btn" id="disconnect" aria-describedby="disconnect-hint" data-i18n="disconnect">断开当前资料库</button>
-            <p id="disconnect-hint" class="field-hint" data-i18n="disconnectHint">仅在更换服务地址或资料库时使用。当前列表归档在本机，重连同一资料库可恢复；数据库不会删除，配对授权不会撤销。</p>
-          </div>
-
         <section class="export-card">
           <h2 data-i18n="exportHeading">导出资料库</h2>
-          <p class="card-note" data-i18n="exportHint">下载数据库中的全部素材，包含标题、链接、阅读状态、时间、标签和笔记。先同步本机待发送收藏，再生成 CSV；它不是完整数据库备份。</p>
+          <p class="card-note" data-i18n="exportHint">下载数据库中的全部素材，包含标题、链接、阅读状态、时间、标签、笔记和标记已读时间。CSV 不是完整数据库备份。</p>
           <div class="options-foot"><button id="export-csv" class="secondary-btn" disabled data-i18n="exportCsv">下载 CSV</button></div>
           <p id="export-status" class="notice" role="status"></p>
         </section>

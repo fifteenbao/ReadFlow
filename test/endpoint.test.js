@@ -8,7 +8,7 @@ import { endpointValue, endpointPermission, requestEndpointPermission, collectio
 import { setSettings, getSettings, disconnectCollection } from '../src/lib/storage.js';
 const address = 'https://connection.example.com/readflow/', other = 'https://other.example.com/library/';
 const key = 't'.repeat(43), identity = { connectionId: 'app:cli_Test', base: 'baseTest/tblTest' };
-const healthy = () => new Response(JSON.stringify({ ok: true, connected: true, identity, protocolVersion: 1, capabilities: { tableRead: true, tableWrite: true }, configuration: { storageProvider: 'feishu' } }));
+const healthy = () => new Response(JSON.stringify({ ok: true, connected: true, identity, protocolVersion: 1, capabilities: { tableRead: true, tableWrite: true }, configuration: { storageProvider: 'database' } }));
 test('runtime addresses stay offline until configured, normalize paths and require exact host permission', async () => {
   const data = {}, storage = area(data), calls = [];
   const client = createConnectionClient({ authentication: 'bearer', storage, fetchImpl: async (url, opts) => { calls.push({ url, opts }); return healthy(); }, hasPermission: async permission => { assert.deepEqual(permission, { origins: ['https://connection.example.com/*'] }); return false; } });

@@ -1,11 +1,14 @@
 import { messages as diagnosticMessages } from './diagnostics.js';
 
+const projectUrl = 'https://github.com/fifteenbao/ReadFlow';
+
 export const translations = {
   en: {
     advancedHint: "Skip this for your first connection. Use these options when needed.",
     advancedSettings: "Advanced · CSV export",
-    agentTask: "Configure ReadFlow from my project folder. Read AGENTS.md and SETUP.md. Chrome extension ID: {extensionId}. Use the server SQLite database as the sole source of truth. Inspect my environment; ask before new hosting, accounts or paid services. Initialize private database storage, configure HTTPS and exact extension-ID allowlist, then give me the service URL. Compare the browser fingerprint before approving pairing; keep the settings page open for automatic completion. Verify capture, failure without local persistence when disconnected, reading status and CSV. Optional Feishu private-message link intake only; do not configure spreadsheet sync. Analysis belongs to an existing conversational agent, not a model API in ReadFlow: ask before enabling and test only with my authorization. Never put secrets in Chrome or claim mock tests prove a live connection.",
-    agentTaskHelp: "Copy this into your own agent chat and provide the ReadFlow project folder. Nothing is sent automatically. Never paste App Secrets or tokens here.",
+    agentTask: `Configure ReadFlow using the project folder I provide. If I haven't provided a local copy, get the source from this repository.\n${projectUrl}\n\n` +
+      "Read AGENTS.md and SETUP.md. Chrome extension ID: {extensionId}. Use the server SQLite database as the sole source of truth. Inspect my environment; ask before new hosting, accounts or paid services. Initialize private database storage, configure HTTPS and exact extension-ID allowlist, then give me the service URL. Compare the browser fingerprint before approving pairing; keep the settings page open for automatic completion. Verify capture, failure without local persistence when disconnected, reading status and CSV. Analysis belongs to an existing conversational agent, not a model API in ReadFlow: ask before enabling and test only with my authorization. Never put secrets in Chrome or claim mock tests prove a live connection.",
+    agentTaskHelp: "Paste the task into your own agent chat. If you have a local ReadFlow folder, share its path too. Nothing is sent automatically. Never paste App Secrets or tokens here.",
     agentTaskLabel: "Task for your agent",
     capture: "Save this page",
     captureAddTag: "Add",
@@ -84,7 +87,7 @@ export const translations = {
     remove: "Remove",
     saved: "Saved",
     settings: "Settings",
-    setupExplanation: "Chrome captures pages; your ReadFlow service stores them in a database. An agent can help configure the service. Feishu link intake is optional.",
+    setupExplanation: "Chrome saves pages to your ReadFlow service, which stores them in your database. An agent can help configure the service.",
     setupRequired: "Not connected · Complete setup first",
     setupStep1: "Prepare: copy the task below into your agent chat.",
     setupStep2: "Fill: get the HTTPS service address from your agent. No table link is needed here.",
@@ -114,15 +117,16 @@ export const translations = {
     welcomeBody: "Connect your ReadFlow library before saving.",
     welcomeHelp: "Settings includes a task you can copy to your agent. ReadFlow does not contain an AI chat.",
     welcomeStep1: "Ask your agent to prepare the ReadFlow service and database.",
-    welcomeStep2: "Paste the service address in Settings. Feishu link intake is optional.",
+    welcomeStep2: "Paste your ReadFlow service address in Settings.",
     welcomeStep3: "Approve pairing, check and save. Captures then sync to your database.",
     welcomeTitle: "Your reading starts here",
   },
   zh: {
     advancedHint: "首次连接无需填写，连接成功后按需使用。",
     advancedSettings: "高级设置 · CSV 导出",
-    agentTask: "请从我提供的项目目录配置 ReadFlow，先读 AGENTS.md 和 SETUP.md。Chrome 扩展 ID：{extensionId}。服务端 SQLite 数据库是唯一主库。先检查环境，新增托管、账号或付费服务前征求同意。初始化私有数据库、配置 HTTPS 和精确扩展 ID 白名单，然后给我服务地址。核对浏览器指纹后批准配对，告知我插件会自动验证并完成连接。验证收藏、断网保存失败且不暂存、阅读状态和 CSV。仅按需配置飞书私聊链接收录；不配置多维表格同步；分析交给已有对话型 agent，ReadFlow 不调用模型 API，先询问再启用，真实测试需获授权。不要把密钥放进 Chrome，不要将模拟验证称为真实接入成功。",
-    agentTaskHelp: "复制到你自己的 agent 会话，并提供 ReadFlow 项目目录。插件不会自动发送消息；不要在这里填写 App Secret 或令牌。",
+    agentTask: `请使用我提供的项目目录配置 ReadFlow。如果我没有提供本地源码，请从以下仓库获取。\n${projectUrl}\n\n` +
+      "请先读 AGENTS.md 和 SETUP.md。Chrome 扩展 ID：{extensionId}。服务端 SQLite 数据库是唯一主库。先检查环境，新增托管、账号或付费服务前征求同意。初始化私有数据库、配置 HTTPS 和精确扩展 ID 白名单，然后给我服务地址。核对浏览器指纹后批准配对，告知我插件会自动验证并完成连接。验证收藏、断网保存失败且不暂存、阅读状态和 CSV。分析交给已有对话型 agent，ReadFlow 不调用模型 API，先询问再启用，真实测试需获授权。不要把密钥放进 Chrome，不要将模拟验证称为真实接入成功。",
+    agentTaskHelp: "把任务粘贴到你自己的 agent 会话。如果你有本地 ReadFlow 源码，请同时提供项目目录。插件不会自动发送消息。请勿在这里填写 App Secret 或令牌。",
     agentTaskLabel: "给 agent 的配置任务",
     capture: "收藏当前页",
     captureAddTag: "添加",
@@ -201,9 +205,9 @@ export const translations = {
     remove: "移除",
     saved: "已保存",
     settings: "设置",
-    setupExplanation: "还没有服务地址？点击下方按钮，将任务交给你自己的 AI 助手（agent）配置。已有地址可直接填写下一栏。飞书链接收录可选。",
+    setupExplanation: "还没有服务地址？点击下方按钮，将任务交给你自己的 AI 助手（agent）配置。已有地址可直接填写下一栏。",
     setupRequired: "尚未连接 · 请先完成设置",
-    setupStep1: "复制配置任务，连同 ReadFlow 项目目录交给自己的 AI 助手。",
+    setupStep1: "将下方的配置任务复制到你自己的 agent 会话。",
     setupStep2: "获得服务地址后，填写下方输入框。",
     setupStep3: "Step 2 连接服务器，复制指纹确认任务给 agent。",
     setupStep4: "服务器批准后，本页自动验证并完成连接。",
@@ -231,7 +235,7 @@ export const translations = {
     welcomeBody: "请先完成 ReadFlow 资料库连接，再开始收藏。",
     welcomeHelp: "设置页提供可复制给 agent 的配置任务。ReadFlow 本身不提供 AI 对话。",
     welcomeStep1: "请 agent 准备 ReadFlow 服务与数据库。",
-    welcomeStep2: "在设置中填写服务地址；飞书链接收录为可选。",
+    welcomeStep2: "在设置中填写你的 ReadFlow 服务地址。",
     welcomeStep3: "确认配对、检查并保存，收藏即可同步到数据库。",
     welcomeTitle: "从这里开始收藏",
   },

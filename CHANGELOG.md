@@ -1,7 +1,8 @@
 # 更新日志
 
-## 未发布
+## 0.4.4 — 2026-11-22
 
+- 插件的中英文配置任务包含项目仓库地址，并优先使用用户提供的本地源码。
 - 将连接协议、主库操作、配置校验与 CSV 导出并入 `server/`，启动入口仍为 `server/serve.mjs`。
 - 清除已停用的每日未读提醒残留：删除 `connector/lib/batch.js` 未读扫光批次、`daily` 入口，以及 `v1/pending`／`v1/resolve` 与 Chrome `PENDING`／`RESOLVE_PENDING`；同步不再恢复 `notifiedAt`／“已发送”标记；preferences 仅保留 `language`。
 - 协作约定：V1.0 前以产品闭环为主，不为旧客户端／旧配置做兼容层。

@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-ReadFlow is an open-source Chrome extension for saving articles and videos, keeping a reading queue, and organizing useful links, tags, and notes in your own library.
+ReadFlow is an open-source Chrome extension to save articles and videos for later, organize them with tags and notes, and keep your collection in a self-hosted library.
 
 **Saving requires a connected, self-hosted ReadFlow service.** The project provides server source code, and your library is stored in your SQLite database.
 
@@ -16,7 +16,9 @@ ReadFlow is an open-source Chrome extension for saving articles and videos, keep
 
 ## Install the Chrome extension
 
-Use Chrome 106 or later. Download the extension ZIP or repository source and extract it to a permanent folder. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the folder containing `manifest.json`. To update, replace the files in the same folder and click **Reload**.
+Use Chrome 106 or later. Download the extension ZIP and extract it to a permanent folder. [Download the Chrome extension](https://github.com/fifteenbao/ReadFlow/releases/latest)
+
+Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the folder containing `manifest.json`. To update, replace the files in the same folder and click **Reload**.
 
 **Set up the service with your agent**: Give it the repository and the configuration steps below. Once you have an HTTPS service URL, pair the extension in Settings to start saving.
 
@@ -37,7 +39,7 @@ Use Chrome 106 or later. Download the extension ZIP or repository source and ext
 
 ## Version history
 
-- **Unreleased · V0.4.3 local test**: Dark lists, folders, automatic refresh, and inline editing.
+- **V0.4.4**: Dark lists, folders, automatic refresh, and inline editing.
 - **V0.4.3**: Updated the interface and installation instructions.
 - **V0.4.2**: Simpler pairing and capture popup.
 - **V0.4.1**: SQLite library and CSV export.

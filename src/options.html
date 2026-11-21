@@ -73,10 +73,10 @@
         <section class="card setup-guide" id="setup-guide" hidden>
           <h2 data-i18n="setupTitle">第一步：准备你的资料库</h2>
           <p class="card-note" data-i18n="setupExplanation">还没有服务地址？点击下方按钮，将任务交给你自己的 AI 助手（agent）配置。已有地址可直接填写下一栏。</p>
-          <ol class="setup-steps"><li data-i18n="setupStep1">复制配置任务，连同 ReadFlow 项目目录交给自己的 AI 助手。</li><li data-i18n="setupStep2">获得服务地址后，填写下方输入框。</li><li data-i18n="setupStep3">Step 2 连接服务器，复制指纹确认任务给 agent。</li><li data-i18n="setupStep4">将确认任务发给 agent；服务器批准后，插件自动验证并完成连接。</li></ol>
+          <ol class="setup-steps"><li data-i18n="setupStep1">将下方的配置任务复制到你自己的 agent 会话。</li><li data-i18n="setupStep2">获得服务地址后，填写下方输入框。</li><li data-i18n="setupStep3">Step 2 连接服务器，复制指纹确认任务给 agent。</li><li data-i18n="setupStep4">将确认任务发给 agent；服务器批准后，插件自动验证并完成连接。</li></ol>
           <button id="copy-agent-task" type="button" class="save-btn" data-i18n="copyAgentTask">复制配置任务</button>
           <p id="copy-agent-status" role="status" class="notice"></p>
-          <p id="agent-task-help" class="field-hint" data-i18n="agentTaskHelp">复制到你自己的 agent 会话，并提供 ReadFlow 项目目录。插件不会自动发送消息；不要在这里填写 App Secret 或令牌。</p>
+          <p id="agent-task-help" class="field-hint" data-i18n="agentTaskHelp">把任务粘贴到你自己的 agent 会话。如果你有本地 ReadFlow 源码，请同时提供项目目录。插件不会自动发送消息。请勿在这里填写 App Secret 或令牌。</p>
           <details class="task-preview" id="task-preview"><summary data-i18n="taskPreview">查看任务内容</summary>
             <label for="agent-task" class="field-label" data-i18n="agentTaskLabel">给 agent 的配置任务</label>
             <textarea id="agent-task" rows="7" readonly aria-describedby="agent-task-help"></textarea>

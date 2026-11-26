@@ -36,7 +36,6 @@ async function setup(t, overrides = {}) {
     config, store: library.store, exclusive: persistence.exclusive,
     inboxConfig: { enabled: true, allowedChatIds: ['oc_test'], allowedOpenIds: ['ou_test'] },
     capture: items => library.sync(items),
-    applyAction: (...args) => library.applyAction(...args),
     getEventCredentials: () => credentials, now: () => time, ...overrides,
   };
   return { library, config, settings, inbox: createFeishuInbox(settings), store: library.store };
@@ -73,7 +72,7 @@ test('only allowed human direct-message senders and chats enter the durable inbo
   assert.throws(() => createFeishuInbox({ ...f.settings, inboxConfig: { enabled: true, allowedChatIds: [], allowedOpenIds: [] } }));
 });
 
-test('durable acknowledgement, message-id retry deduplication, URL deduplication across Chrome and Feishu, and browser status sync', async t => {
+test('durable acknowledgement, message-id retry deduplication, and URL deduplication across Chrome and Feishu', async t => {
   const f = await setup(t); const first = event();
   assert.equal((await f.inbox.handleRequest(signed(first))).status, 200);
   assert.equal(f.library.list().length, 0);
@@ -88,9 +87,9 @@ test('durable acknowledgement, message-id retry deduplication, URL deduplication
   const second = event(); second.event.message.message_id = 'om_second'; second.event.message.content = JSON.stringify({ text: 'https://example.com/second' });
   await recreated.handleRequest(signed(second));
   assert.equal((await recreated.processPending()).created, 1);
-  const saved = f.library.list().find(a => a.url === 'https://example.com/second'); assert.equal(saved.status, '待阅读');
-  f.library.setStatus(saved.recordId, '跳过');
-  assert.equal(f.library.get(saved.recordId).status, '跳过');
+  const saved = f.library.list().find(a => a.url === 'https://example.com/second');
+  assert.equal(saved.purpose, 'later');
+  assert.equal(Object.hasOwn(saved, 'status'), false);
 });
 
 test('failed persistence is not acknowledged; failed capture stays pending; crash-after-create retries do not duplicate records', async t => {
@@ -141,17 +140,13 @@ test('database intake confirms only after capture; lost receipt retries keep the
   assert.equal(receipts[0][0], 'oc_test'); assert.equal((await f.inbox.receipts()).length, 0);
 });
 
-test('reading card callbacks require signed event, allowed sender/chat and a persisted issued-card binding', async t => {
-  const applied = [];
-  const f = await setup(t, { capture: async () => ({ created: 0 }), applyAction: async (...args) => applied.push(args) });
-  const state = await f.store.load(); state.scopes.cards = { target: { chatId: 'oc_test' }, cards: { om_card: { requestId: 'request1', recordIds: ['recItem'] } } }; await f.store.save(state);
-  const card = () => ({ schema: '2.0', header: { ...event().header, event_type: 'card.action.trigger' }, event: {
+test('legacy reading-card callbacks do not change the library', async t => {
+  const f = await setup(t);
+  const source = f.library.sync([{ id: 'chrome-id', title: 'Article', url: 'https://example.com/new', savedAt: new Date(time).toISOString() }]).articles[0];
+  const card = { schema: '2.0', header: { ...event().header, event_type: 'card.action.trigger' }, event: {
     operator: { open_id: 'ou_test' }, context: { open_chat_id: 'oc_test', open_message_id: 'om_card' },
-    action: { value: { action: 'read', recordId: 'recItem', requestId: 'request1' } },
-  } });
-  assert.equal((await f.inbox.handleRequest(signed(card()))).status, 200); assert.equal(applied.length, 1);
-  const wrongUser = card(); wrongUser.event.operator.open_id = 'ou_other'; assert.equal((await f.inbox.handleRequest(signed(wrongUser))).status, 403);
-  const wrongRecord = card(); wrongRecord.event.action.value.recordId = 'recOther'; assert.equal((await f.inbox.handleRequest(signed(wrongRecord))).status, 503);
-  const wrongMessage = card(); wrongMessage.event.context.open_message_id = 'om_other'; assert.equal((await f.inbox.handleRequest(signed(wrongMessage))).status, 503);
-  assert.equal(applied.length, 1);
+    action: { value: { action: 'read', recordId: source.recordId, requestId: 'request1' } },
+  } };
+  assert.equal((await f.inbox.handleRequest(signed(card))).status, 200);
+  assert.deepEqual(f.library.get(source.recordId), source);
 });

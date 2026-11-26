@@ -1,9 +1,7 @@
-import { READING_STATUSES } from './reading-state.js';
 import { SafeError, normalizeArticleUrl } from './security.js';
-import { callKnowledge } from './knowledge.js';
 import { callConnection } from './connection.js';
 import { normalizeCaptureMetadata } from './capture-metadata.js';
-import { normalizeLibraryItem, libraryRecordId, libraryBase, isLibraryDeleted } from './library-binding.js';
+import { normalizeLibraryItem, isLibraryDeleted } from './library-binding.js';
 import { LIBRARY_ITEM_LIMIT } from './library-limits.js';
 import { storedEndpoint, endpointValue, releaseEndpointPermission, endpointPermission, collectionArchiveKey } from './endpoint.js';
 
@@ -38,7 +36,7 @@ export function prepareCapture(items, { url, title, metadata = {} }) {
     throw new SafeError(`Library is full (${LIBRARY_ITEM_LIMIT} items). Delete some items before saving new ones.`);
   }
   const item = { id: crypto.randomUUID(), url: normalizedUrl, title: title || normalizedUrl,
-    savedAt: new Date().toISOString(), read: false, status: '待阅读', notifiedAt: null, ...fields,
+    savedAt: new Date().toISOString(), ...fields,
     ...(Object.keys(fields).length ? { metadataUpdate: { id: crypto.randomUUID(), fields } } : {}) };
   return item;
 }
@@ -47,20 +45,6 @@ export async function addItem(capture) {
   const item = prepareCapture(items, capture);
   await setItems([item, ...items.filter(old => old.id !== item.id)]);
   return item;
-}
-export const setRead = (id, read) => setReadingStatus(id, read ? '已读' : '待阅读');
-export async function setReadingStatus(id, status) {
-  if (!READING_STATUSES.includes(status)) throw new SafeError('Invalid reading status.');
-  const item = (await getItems()).find(item => item.id === id);
-  if (!item) throw new SafeError('Reading item not found.');
-  let readAt = null;
-  const recordId = libraryRecordId(item);
-  if (recordId && !isLibraryDeleted(item)) {
-    const result = await callKnowledge('read', { recordId, base: libraryBase(item), status });
-    readAt = Number.isFinite(result.readAt) ? result.readAt : null;
-  }
-  const items = (await getItems()).map(item => item.id === id ? { ...item, status, read: status !== '待阅读', readAt } : item);
-  await setItems(items); return items;
 }
 export async function deleteItem(id) {
   const items = (await getItems()).filter(item => item.id !== id);

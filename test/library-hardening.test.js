@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { normalizeArticleUrl } from '../src/lib/security.js';
 import { mergeKnowledge } from '../src/lib/knowledge.js';
 import { prepareCapture } from '../src/lib/storage.js';
-import { readingStatus, isUnread } from '../src/lib/reading-state.js';
 import { normalizeLibraryItem } from '../src/lib/library-binding.js';
 import { LIBRARY_ITEM_LIMIT } from '../src/lib/library-limits.js';
 import { area } from '../test-support/chrome-mock.js';
@@ -14,12 +13,9 @@ test('article URLs normalize the same way locally and for lookup', () => {
   assert.equal(normalizeArticleUrl('javascript:alert(1)'), null);
 });
 
-test('reading status prefers status over the legacy read flag', () => {
-  assert.equal(readingStatus({ status: '跳过', read: false }), '跳过');
-  assert.equal(isUnread({ status: '跳过', read: false }), false);
-  assert.equal(isUnread({ status: '待阅读', read: true }), true);
-  assert.deepEqual(normalizeLibraryItem({ status: '已读', read: false, snoozedUntil: 1 }),
-    { status: '已读', read: true });
+test('library items drop retired reading fields from the browser cache', () => {
+  assert.deepEqual(normalizeLibraryItem({ title: 'Article', status: '已读', read: false, readAt: 1, snoozedUntil: 1 }),
+    { title: 'Article' });
 });
 
 test('prepareCapture and mergeKnowledge share the library item limit', async t => {

@@ -17,18 +17,18 @@ test('metadata validates at the trust boundary, deduplicates normalized tags and
   assert.throws(() => metadataUpdate({ id: 'bad', fields: { tags: ['AI'] } }));
 });
 
-test('database captures store tags/remark; retries preserve remote notes and reading state', async t => {
+test('database captures store tags/remark; retries preserve remote notes', async t => {
   const { connector, library } = await databaseHost(t);
   const item = capture();
   const first = await connector.dispatch('sync', { provider: 'database', items: [item] });
   const record = library.list().find(article => article.url === item.url);
   assert.deepEqual(record.tags, ['AI', 'Research']); assert.equal(record.remark, item.metadataUpdate.fields.remark);
   let local = mergeKnowledge([item], first); assert.equal(local[0].metadataUpdate, undefined);
-  library.setStatus(record.recordId, '跳过');
+  library.sync([{ ...item, metadataUpdate: { id: crypto.randomUUID(), fields: { remark: 'New server note' } } }]);
   const again = await connector.dispatch('sync', { provider: 'database', items: local });
   assert.equal(again.created, 0);
   local = mergeKnowledge(local, again);
-  assert.equal(local[0].status, '跳过');
+  assert.equal(local[0].remark, 'New server note');
   assert.ok(first.captureMetadata.tagOptions.includes('AI'));
 });
 
@@ -37,10 +37,9 @@ test('explicit edits update existing records by URL and clearing a field does no
   const item = capture();
   await connector.dispatch('sync', { provider: 'database', items: [{ id: 'seed', url: item.url, title: 'Existing title', savedAt: '2026-10-20T00:00:00Z',
     metadataUpdate: { id: crypto.randomUUID(), fields: { tags: ['Existing'], remark: 'Old' } } }] });
-  library.setStatus(library.list()[0].recordId, '已读');
   const result = await connector.dispatch('sync', { provider: 'database', items: [item] });
   assert.equal(result.created, 0); assert.equal(library.list().length, 1);
-  assert.equal(library.list()[0].title, 'Existing title'); assert.equal(library.list()[0].status, '已读');
+  assert.equal(library.list()[0].title, 'Existing title');
   const local = mergeKnowledge([item], result);
   const edit = { ...local[0], metadataUpdate: { id: crypto.randomUUID(), fields: { remark: '' } } };
   await connector.dispatch('sync', { provider: 'database', items: [edit] });

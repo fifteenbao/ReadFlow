@@ -35,8 +35,10 @@ test('Database reference host signs browser requests and rejects unsupported pro
   const health = await client('health'); assert.match(health.identity.connectionId, /^db:/);
   const saved = await client('sync', { items: [{ id: 'local1', title: 'Signed capture', url: 'https://example.com/read', savedAt: '2026-10-23T00:00:00Z' }] });
   assert.equal(saved.created, 1);
-  await client('read', { base: saved.base, recordId: saved.articles[0].recordId, status: '已读' });
-  assert.equal((await client('sync', { items: [] })).articles[0].read, true);
+  const synced = await client('sync', { items: [] });
+  assert.equal(synced.articles[0].recordId, saved.articles[0].recordId);
+  assert.equal(Object.hasOwn(synced.articles[0], 'readAt'), false);
+  assert.equal((await call('read', {})).status, 404);
   assert.match((await client('csv')).csv, /Signed capture/);
   await call('preferences', { provider: 'database', language: 'zh' });
   assert.equal((await (await call('health', { provider: 'database' })).json()).configuration.language, 'zh');

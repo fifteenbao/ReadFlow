@@ -4,6 +4,7 @@ export function validateHostConfig(config) {
   if (!config || typeof config !== 'object' || config.connections || config.connector?.storageProvider !== 'database') throw new SafeError('Use one database library configuration.');
   parseConnectionUrl(config.baseUrl);
   if (typeof config.stateDir !== 'string' || !config.stateDir || config.extensionId && !/^[a-p]{32}$/.test(config.extensionId)) throw new SafeError('Configure private storage and an exact extension ID.');
+  if (config.trustProxyClientIp !== undefined && typeof config.trustProxyClientIp !== 'boolean') throw new SafeError('trustProxyClientIp must be a boolean.');
   const c = config.connector, f = config.feishu || {}, inbox = config.feishuInbox;
   if (f.export != null) throw new SafeError('Bitable export is no longer supported. Remove feishu.export; use CSV instead.');
   if (c.language && !['en', 'zh'].includes(c.language)) throw new SafeError('Invalid interface language.');

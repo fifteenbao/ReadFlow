@@ -8,9 +8,9 @@ ReadFlow is an open-source Chrome extension to save articles and videos for late
 
 ## Feature checklist
 
-- [x] **Read Later**: Save links and browse unread and read items.
-- [x] **Reference**: Create folders and subfolders, then find items by type, tag, or star.
-- [x] **Tags and notes**: Edit from the list. New or edited notes have a 140-character limit.
+- [x] **Read Later**: Keep articles and videos you want to revisit in one list.
+- [x] **Folders**: Use the arrow to expand a folder and its name to view the contents. On narrow screens, open the tree from **Current folder**.
+- [x] **Tags and notes**: Choose **Edit** on a saved item to open its editor. New or edited notes have a 140-character limit.
 - [x] **CSV export**: Download saved items, tags, notes, and folder paths from Settings.
 - [ ] **Agent reading reviews** (pending)
 
@@ -39,6 +39,7 @@ Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**,
 
 ## Version history
 
+- **V0.5.0**: Simpler list and folder navigation, a dedicated editor, a shared dark theme, and better pairing verification.
 - **V0.4.4**: Dark lists, folders, automatic refresh, and inline editing.
 - **V0.4.3**: Updated the interface and installation instructions.
 - **V0.4.2**: Simpler pairing and capture popup.

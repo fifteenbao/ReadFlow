@@ -50,14 +50,13 @@ test('browser organization edits round trip through SQLite; offline changes neve
   assert.equal(local.items[0].folderId, child.folderId);
   assert.match((await send({ type: 'EXPORT_CSV' })).csv, /Research \/ Tools/);
   assert.throws(() => library.createFolder('Invalid parent', 'folder_' + '0'.repeat(32)), /Parent folder/);
-  await send({ type: 'SET_STATUS', id: saved.id, status: '已读' });
-  const readAt = local.items[0].readAt;
   assert.equal((await send({ type: 'UPDATE_METADATA', id: saved.id, metadata: { purpose: 'later' } })).ok, true);
   assert.equal(local.items[0].folderId, null);
   assert.equal((await send({ type: 'UPDATE_METADATA', id: saved.id, metadata: { folderId: child.folderId } })).ok, false);
   await send({ type: 'SYNC' });
   assert.equal(local.knowledgeSync.folders[1].parentId, root.folderId);
-  assert.equal(local.items[0].readAt, readAt); assert.equal(local.items[0].remark, 'Use later');
+  assert.equal(local.items[0].remark, 'Use later');
+  assert.equal(Object.hasOwn(local.items[0], 'readAt'), false);
   const before = structuredClone(local.items);
   offline = true;
   assert.equal((await send({ type: 'UPDATE_METADATA', id: saved.id, metadata: { starred: false } })).ok, false);

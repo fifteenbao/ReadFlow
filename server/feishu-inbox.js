@@ -33,7 +33,7 @@ export function extractArticleLinks(text) {
 }
 
 export function createFeishuInbox({ config: input, inboxConfig, store, exclusive,
-  capture, sendReceipt, applyAction, getEventCredentials, onDiagnostic = () => {}, now = () => Date.now() }) {
+  capture, sendReceipt, getEventCredentials, onDiagnostic = () => {}, now = () => Date.now() }) {
   const config = validateInboxIdentity(input);
   const appId = config.connectionId.slice(4);
   const validList = (list, pattern) => Array.isArray(list) && list.length > 0 && list.length <= 100 && list.every(value => typeof value === 'string' && pattern.test(value));
@@ -107,18 +107,6 @@ export function createFeishuInbox({ config: input, inboxConfig, store, exclusive
         try { event = await parse(request); } catch { return response(401); }
         if (event.type === 'url_verification') return response(200, { challenge: event.challenge });
         if (event.schema !== '2.0' || event.header?.app_id !== appId) return response(403);
-        if (event.header.event_type === 'card.action.trigger' && applyAction) {
-          const body = event.event, value = body?.action?.value, chat = body?.context?.open_chat_id;
-          if (!inboxConfig.allowedChatIds.includes(chat) || !inboxConfig.allowedOpenIds.includes(body?.operator?.open_id)) return response(403);
-          await exclusive(async () => {
-            const state = await store.load();
-            const card = Object.values(state.scopes).filter(scope => scope.target?.chatId === chat)
-              .map(scope => scope.cards?.[body?.context?.open_message_id]).find(Boolean);
-            if (!card || card.requestId !== value?.requestId || !card.recordIds.includes(value?.recordId)) throw new Error('Unknown reading card.');
-            await applyAction(event.header.event_id, value.recordId, value.action, now());
-          });
-          return response(200, { toast: { type: 'success', content: 'ReadFlow: saved / 已保存' } });
-        }
         if (event.header.event_type !== 'im.message.receive_v1') return response(200, { code: 0 });
         const message = event.event?.message, sender = event.event?.sender;
         if (sender?.sender_type !== 'user' || message?.chat_type !== 'p2p' || message?.message_type !== 'text' ||
@@ -156,7 +144,7 @@ export function createFeishuInbox({ config: input, inboxConfig, store, exclusive
         let processed = 0, created = 0;
         for (const [id, entry] of pending) {
           if (!Array.isArray(entry.links) || entry.links.length > 10 || entry.links.some(url => !isSafeArticleUrl(url)) || !Number.isFinite(Date.parse(entry.savedAt))) throw new Error('Invalid inbox entry.');
-          const items = entry.links.map((url, index) => ({ id: hash(id + ':' + index), url, title: url, savedAt: entry.savedAt, read: false, status: '待阅读' }));
+          const items = entry.links.map((url, index) => ({ id: hash(id + ':' + index), url, title: url, savedAt: entry.savedAt }));
           // Same path and URL deduplication as Chrome capture; no message send or URL fetch.
           const result = entry.status === 'recorded' ? { created: 0 } : await capture(items);
           const latest = await store.load(); // capture may have updated other state; do not overwrite it.

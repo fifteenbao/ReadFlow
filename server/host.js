@@ -37,7 +37,7 @@ export async function createHost(config, { getCredentials = () => ({ appId: proc
     const inbox = config.feishuInbox?.enabled ? createFeishuInbox({
       config: { connectionId: `app:${config.feishu?.appId}`, baseToken: library.libraryId, articleTableId: 'library' },
       inboxConfig: config.feishuInbox, ...shared,
-      capture: items => library.sync(items), applyAction: (...args) => library.applyAction(...args),
+      capture: items => library.sync(items),
       sendReceipt: async (chatId, uuid, count, created) => {
         const result = await feishu.send(chatId, 'post', { zh_cn: { title: 'ReadFlow · 已收录 / Saved', content: [[{ tag: 'text', text: `${count} 个链接：${created} 条新收藏，其余已存在。Saved ${created} new item(s); other links already exist.` }]] } }, uuid);
         if (!/^om_[A-Za-z0-9]+$/.test(result.data?.message_id || '')) throw new Error('Receipt delivery is unconfirmed.');
@@ -45,9 +45,9 @@ export async function createHost(config, { getCredentials = () => ({ appId: proc
       getEventCredentials, onDiagnostic,
     }) : null;
     const eventUrl = new URL('events/feishu', config.baseUrl.endsWith('/') ? config.baseUrl : config.baseUrl + '/').href;
-    const route = async request => request.url === eventUrl
+    const route = async (request, transport) => request.url === eventUrl
       ? inbox ? inbox.handleRequest(request) : new Response(null, { status: 404 })
-      : new URL(request.url).pathname.startsWith(agentPath) ? agentApi(request) : handleRequest(request);
+      : new URL(request.url).pathname.startsWith(agentPath) ? agentApi(request, transport) : handleRequest(request, transport);
     return { connector, handleRequest: route, pairing, agentPairing, library, feishu, inbox, store: library.store, exclusive: persistence.exclusive, close: () => library.close() };
   } catch (error) { library.close(); throw error; }
 }

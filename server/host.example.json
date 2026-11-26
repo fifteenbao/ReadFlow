@@ -2,6 +2,7 @@
   "baseUrl": "https://connection.example.com/readflow/",
   "extensionId": "",
   "stateDir": "./state",
+  "trustProxyClientIp": false,
   "connector": {
     "storageProvider": "database",
     "language": "zh"

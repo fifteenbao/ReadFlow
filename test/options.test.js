@@ -17,7 +17,7 @@ test('settings pair with approval, use one language selector and group provider 
   class Element {
     constructor() { this.style = {}; this.children = []; this.value = ''; this.textContent = ''; this.disabled = false; this.checked = false; this.listeners = {}; this.attrs = {}; this.classList = { add() {}, remove() {} }; }
     setAttribute(k,v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k]; } removeAttribute(k) { delete this.attrs[k]; }
-    append(...values) { this.children.push(...values); } appendChild(value) { this.children.push(value); } replaceChildren(...values) { this.children = values; } focus() {} select() { this.selected = true; } scrollIntoView() {}
+    append(...values) { this.children.push(...values); } appendChild(value) { this.children.push(value); } replaceChildren(...values) { this.children = values; } focus() { this.focused = true; } select() { this.selected = true; } scrollIntoView() {}
     addEventListener(name, fn) { this.listeners[name] = fn; }
   }
   const elements = new Map();
@@ -36,22 +36,29 @@ test('settings pair with approval, use one language selector and group provider 
   globalThis.location = { hash: '' };
   globalThis.history = { replaceState: (_a, _b, hash) => { location.hash = hash; } };
   let operatorApproved = false, pairUnavailable = false, pairId = 'a'.repeat(36), deletionFails = false, syncFails = false, permissionGranted = true, connected = false, saved = false, provider = 'database', lastSaved, calls = [];
+  let missingExtensionId = false, serverTime;
+  const extensionId = 'a'.repeat(32);
   const local = { connectionEndpoint: 'https://connection.example.com/readflow/', items: [
     { id: 'unread', title: 'Unread', tags: ['AI'], remark: '<script>note</script>', url: 'https://example.com/a', read: false, savedAt: '2026-10-14T00:00:00Z' },
-    { id: 'read', title: 'Read', url: 'https://example.com/b', read: true, status: '已读', savedAt: '2026-10-14T00:00:00Z' },
+    { id: 'read', title: 'Read', remark: '旧'.repeat(150), url: 'https://example.com/b', read: true, status: '已读', savedAt: '2026-10-14T00:00:00Z' },
     { id: 'skip', title: 'Skip', url: 'https://example.com/c', read: true, status: '跳过', savedAt: '2026-10-14T00:00:00Z' },
-  ] };
+  ], knowledgeSync: { folders: [] } };
   const status = () => ({ ok: true, connected, protocolVersion: 1, configuration: { storageProvider: provider, language: lastSaved?.language || 'en' } });
   globalThis.chrome = {
     permissions: { request: async () => permissionGranted, contains: async () => true, remove: async () => true },
     storage: { local: area(local), onChanged: event() },
     i18n: { getUILanguage: () => 'en-US' },
-    runtime: { getManifest: () => ({ version }), sendMessage: async message => {
+    runtime: { id: extensionId, getManifest: () => ({ version }), sendMessage: async message => {
       calls.push(message);
       if (message.type === 'PAIR_STATUS') return { ok: true, approved: saved, status: saved ? 'approved' : 'unpaired', baseUrl: local.connectionEndpoint || '' };
       if (message.type === 'PAIR_REQUEST' && pairUnavailable) throw new Error('Network unavailable');
+      if (message.type === 'PAIR_REQUEST' && missingExtensionId) return { ok: false, diagnostic: { code: 'EXTENSION_ID_UNSET', stage: 'identity' } };
       if (message.type === 'PAIR_REQUEST') return { ok: true, status: operatorApproved ? 'approved' : 'pending', fingerprint: 'f'.repeat(64), pairId };
       if (message.type === 'VALIDATE_CONNECTION') {
+        if (serverTime) {
+          const diagnostic = { code: 'CLOCK_SKEW', stage: 'identity', serverTime };
+          return { ok: false, diagnostic, error: formatDiagnostic(diagnostic) };
+        }
         if (message.accessKey === 'bad') return { ok: false, error: formatDiagnostic({ code: 'KEY_INVALID', stage: 'identity' }) };
         if (message.accessKey === 'wrong-origin') return { ok: false, error: formatDiagnostic({ code: 'ORIGIN_DENIED', stage: 'identity' }) };
         provider = 'database'; connected = true;
@@ -64,7 +71,6 @@ test('settings pair with approval, use one language selector and group provider 
         Object.assign(local.items.find(item => item.id === message.id), message.metadata); return { ok: true };
       }
       if (message.type === 'DELETE_ITEM') { if (deletionFails) return { ok: false, error: 'Network unavailable' }; local.items = local.items.filter(item => item.id !== message.id); return { ok: true }; }
-      if (message.type === 'SET_STATUS') { const item = local.items.find(i => i.id === message.id); item.status = message.status; item.read = message.status !== '待阅读'; return { ok: true }; }
       if (message.type === 'SAVE_SETTINGS') { delete local.pendingConnectionSetup; saved = true; lastSaved = message.settings; local.connectionEndpoint = lastSaved.connectionUrl; return { ok: true, settings: lastSaved }; }
       return { ok: true };
     } },
@@ -73,62 +79,68 @@ test('settings pair with approval, use one language selector and group provider 
   await import('../src/options.js'); await drain();
   assert.equal(el('setup-guide').hidden, false);
   assert.equal(el('settings').hidden, true);
-  assert.equal(el('reading-list').hidden, false); assert.equal(el('list').children.length, 1);
-  assert.match(el('home-counts').textContent, /1 条未读.*1 条已读/);
-  for (const id of ['filter-unread', 'filter-read']) assert.match(el(id).textContent, /\(1\)/);
-  await el('filter-read').listeners.click();
-  assert.equal(el('list').children[0].children[0].children[0].textContent, 'Read');
-  assert.equal(el('filter-read').getAttribute('aria-pressed'), 'true');
-  assert.doesNotMatch(html, /id="filter-skip"/);
+  assert.equal(el('reading-list').hidden, false);
+  assert.equal(el('list').children.length, 3, 'legacy statuses do not hide saved items');
+  assert.doesNotMatch(html, /id="(?:view-all|filter-unread|filter-read|filter-status|reading-status-tabs)"/);
   assert.equal(el('collection-filters').hidden, true);
-  await el('view-all').listeners.click();
-  const skipped = el('list').children.find(row => row.children[0].children[0].textContent === 'Skip');
-  assert.ok(skipped, 'legacy skipped items remain visible in All');
-  assert.equal(skipped.children[3].children.find(option => option.value === '跳过').disabled, true);
-  await el('view-later').listeners.click();
-  await el('filter-unread').listeners.click();
-  const row = el('list').children[0];
-  assert.equal(row.children[1].children[0].textContent, 'AI');
-  assert.equal(row.children[2].children[0].children[0].value, '<script>note</script>');
-  const noteEditor = () => el('list').children[0].children[2];
-  let editor = noteEditor(), input = editor.children[0].children[0];
-  input.value = '新笔记\n保留输入'; input.listeners.input();
-  assert.equal(editor.children[0].children[1].textContent, input.value + '\n', 'full-text mirror retains line breaks');
-  deletionFails = true; await editor.children[2].listeners.click();
-  assert.equal(input.value, '新笔记\n保留输入');
+  assert.equal(el('edit-item').hidden, true);
+  const rowFor = title => el('list').children.find(row => row.children[0].children[0]?.textContent === title);
+  const activate = async hash => { location.hash = hash; await viewEvents.hashchange(); };
+  const openEdit = title => activate(rowFor(title).children[3].children[0].href);
+  const formEvent = () => ({ preventDefault() {} });
+  const submit = () => el('edit-form').listeners.submit(formEvent());
+  const note = el('edit-note'), tags = el('edit-tags');
+
+  assert.equal(rowFor('Unread').children[1].children[0].textContent, 'AI');
+  assert.equal(rowFor('Unread').children[2].textContent, '<script>note</script>');
+  assert.equal(rowFor('Unread').children[2].children.length, 0);
+  await openEdit('Unread');
+  assert.equal(el('reading-list').hidden, true);
+  assert.equal(el('edit-item').hidden, false);
+  assert.equal(el('edit-heading').focused, true);
+  assert.equal(note.value, '<script>note</script>');
+  note.value = '新笔记\n保留输入'; note.listeners.input();
+  tags.value = ' AI \n研究\nAI'; tags.listeners.input();
+  deletionFails = true; await submit();
+  assert.equal(note.value, '新笔记\n保留输入');
+  assert.equal(tags.value, ' AI \n研究\nAI');
+  assert.match(el('edit-feedback').textContent, /保存失败，输入仍保留/);
   assert.equal(local.items[0].remark, '<script>note</script>');
-  assert.equal(editor.children[2].disabled, false, 'failed save can retry without retyping');
-  await el('filter-read').listeners.click(); await el('filter-unread').listeners.click();
-  editor = noteEditor(); input = editor.children[0].children[0];
-  assert.equal(input.value, '新笔记\n保留输入', 'in-page filtering preserves unsaved input');
-  deletionFails = false; await editor.children[2].listeners.click();
-  assert.equal(local.items[0].remark, '新笔记\n保留输入');
-  editor = noteEditor(); input = editor.children[0].children[0];
-  input.value = '字'.repeat(141); input.listeners.input();
-  assert.equal(editor.children[2].disabled, true);
-  const writes = calls.filter(c => c.type === 'UPDATE_METADATA').length;
-  await editor.children[2].listeners.click();
-  assert.equal(calls.filter(c => c.type === 'UPDATE_METADATA').length, writes);
-  input.value = '😀'.repeat(140); input.listeners.input();
-  assert.equal(editor.children[2].disabled, false); await editor.children[2].listeners.click();
-  assert.equal(local.items[0].remark, '😀'.repeat(140));
-  const tagEditor = () => el('list').children[0].children[1].children.at(-1);
-  let tagForm = tagEditor(), tagInput = tagForm.children[0].children[0];
-  tagInput.value = ' AI \n研究\nAI'; tagInput.listeners.input();
-  deletionFails = true; await tagForm.children[2].listeners.click();
-  assert.equal(tagInput.value, ' AI \n研究\nAI'); assert.deepEqual(local.items[0].tags, ['AI']);
-  deletionFails = false; await tagForm.children[2].listeners.click();
+  assert.equal(el('edit-save').disabled, false);
+  deletionFails = false; await submit();
+  assert.equal(el('edit-item').hidden, true);
+  assert.equal(el('reading-list').hidden, false);
+  assert.equal(el('list-heading').focused, true);
+  assert.equal(rowFor('Unread').children[2].textContent, '新笔记\n保留输入');
   assert.deepEqual(local.items[0].tags, ['AI', '研究']);
-  tagForm = tagEditor(); tagInput = tagForm.children[0].children[0];
-  tagInput.value = ''; tagInput.listeners.input(); await tagForm.children[2].listeners.click();
+
+  await openEdit('Unread');
+  note.value = '字'.repeat(141); note.listeners.input();
+  const writes = calls.filter(c => c.type === 'UPDATE_METADATA').length;
+  await submit();
+  assert.equal(note.getAttribute('aria-invalid'), 'true');
+  assert.equal(calls.filter(c => c.type === 'UPDATE_METADATA').length, writes);
+  note.value = '😀'.repeat(140); note.listeners.input(); await submit();
+  assert.equal(local.items[0].remark, '😀'.repeat(140));
+  await openEdit('Unread');
+  tags.value = ''; tags.listeners.input(); await submit();
   assert.deepEqual(local.items[0].tags, []);
   assert.equal(local.items[0].remark, '😀'.repeat(140), 'tag edits cannot replace notes');
-  row.children[3].value = '已读'; await row.children[3].listeners.change();
-  assert.match(el('filter-unread').textContent, /\(0\)/);
-  assert.match(el('filter-read').textContent, /\(2\)/);
-  await el('filter-read').listeners.click();
-  const moved = el('list').children[0]; moved.children[3].value = '待阅读'; await moved.children[3].listeners.change();
-  await el('filter-unread').listeners.click();
+  await openEdit('Read');
+  assert.match(el('edit-note-count').textContent, /原样保留/);
+  tags.value = '新标签'; tags.listeners.input(); await submit();
+  assert.equal(local.items[1].remark.length, 150);
+  assert.deepEqual(calls.findLast(c => c.type === 'UPDATE_METADATA').metadata, { tags: ['新标签'] });
+  await openEdit('Unread');
+  note.value = '不保存'; note.listeners.input();
+  await el('edit-cancel').listeners.click(formEvent());
+  assert.equal(local.items[0].remark, '😀'.repeat(140));
+  await activate('#reading-list/all');
+  assert.equal(el('view-later').getAttribute('aria-pressed'), 'true');
+  await activate('#reading-list/later/edit/missing');
+  assert.equal(el('edit-missing').hidden, false);
+  assert.equal(el('edit-form').hidden, true);
+  await el('edit-back').listeners.click(formEvent());
 
 
   location.hash = '#reading-list'; viewEvents.hashchange();
@@ -138,6 +150,10 @@ test('settings pair with approval, use one language selector and group provider 
   assert.ok(el('connection-meta').textContent.includes(version));
   assert.doesNotMatch(html, /id="(?:provider|tableUrl)"/);
   assert.doesNotMatch(html, /id="export-table"/);
+  missingExtensionId = true;
+  await el('check-connection').listeners.click();
+  assert.match(el('auth-status').textContent, /服务端尚未登记扩展 ID.*host\.json.*a{32}/);
+  missingExtensionId = false;
   await el('check-connection').listeners.click(); assert.match(el('pair-status').textContent, /等待服务器/);
   assert.match(el('auth-status').textContent, /等待服务器批准/);
   const oldClipboard = navigator.clipboard; let copied;
@@ -145,6 +161,9 @@ test('settings pair with approval, use one language selector and group provider 
   t.after(() => { if (oldClipboard) Object.defineProperty(navigator, 'clipboard', { configurable: true, value: oldClipboard }); else delete navigator.clipboard; });
   await el('copy-pair-task').listeners.click();
   assert.ok(copied.includes('f'.repeat(64))); assert.ok(copied.includes(local.connectionEndpoint));
+  assert.match(el('pair-fingerprint').textContent, /ffff ffff/);
+  assert.match(el('pair-fingerprint').textContent, /核对码：7777/);
+  assert.match(copied, /pair-wait.*--pair-id/);
   navigator.clipboard.writeText = async () => { throw new Error('denied'); };
   await el('copy-pair-task').listeners.click();
   assert.equal(el('pair-task-preview').open, true); assert.equal(el('pair-task').selected, true);
@@ -156,6 +175,13 @@ test('settings pair with approval, use one language selector and group provider 
   assert.ok(el('pair-task').value.includes('f'.repeat(64)));
   operatorApproved = true;
   assert.doesNotMatch(html, /id="(?:chatId|remindersEnabled|reminderTime|timeZone|remindersAvailable)"/);
+  serverTime = Date.parse('2026-11-22T09:00:00Z');
+  await poll();
+  assert.equal(saved, false);
+  assert.match(el('auth-status').textContent, /请校准.*服务器时间=2026-11-22T09:00:00/);
+  assert.equal([...timers.values()].some(timer => timer.ms === 3000), false);
+  serverTime = undefined;
+  await el('check-connection').listeners.click();
   await poll(); await drain();
   assert.match(el('auth-status').textContent, /自动连接/);
   assert.equal(el('setup-guide').hidden, true);
@@ -182,18 +208,58 @@ test('settings pair with approval, use one language selector and group provider 
   assert.equal(local.uiLanguage, 'en');
   assert.equal(Object.hasOwn(lastSaved, 'remindersEnabled'), false);
   assert.ok(calls.some(c => c.type === 'VALIDATE_CONNECTION'));
-  const organizationControls = () => el('list').children[0].children[0].children[2];
+  const organizationControls = () => rowFor('Unread').children[0].children[2];
   await organizationControls().children[0].listeners.click();
   el('filter-starred').checked = true; await el('filter-starred').listeners.change();
-  assert.equal(el('list-count').textContent, '共 1 条');
+  assert.equal(el('list-count').textContent, 'Items (3)');
   const purpose = organizationControls().children[1]; purpose.value = 'reference'; await purpose.listeners.change();
-  await el('view-reference').listeners.click(); assert.equal(el('list-count').textContent, '共 1 条');
+  const parentId = 'folder_' + '1'.repeat(32), childId = 'folder_' + '2'.repeat(32);
+  local.knowledgeSync.folders = [{ id: parentId, name: 'Design', parentId: null }, { id: childId, name: 'Research', parentId }];
+  local.items.find(item => item.id === 'unread').folderId = parentId;
+  await el('view-reference').listeners.click(); assert.equal(el('list-count').textContent, 'Items (1)');
   assert.equal(el('filter-starred').checked, false, 'switching sections clears starred filter');
-  assert.equal(el('list').children[0].children[3].hidden, true);
-  assert.equal(el('reading-status-tabs').hidden, true);
+  const picker = el('folder-picker');
+  const parent = () => el('library-folders').children[0].children[2];
+  const toggle = () => parent().children[0].children[0];
+  const choose = () => parent().children[0].children[1];
+  assert.equal(picker.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+  await choose().listeners.click();
+  assert.equal(el('folder-picker-name').textContent, 'Design');
+  assert.equal(toggle().getAttribute('aria-expanded'), 'false', 'selecting a folder does not expand it');
+  toggle().listeners.click();
+  assert.equal(el('folder-title').textContent, 'Design', 'expanding a folder does not change the selection');
+  const children = parent().children[1];
+  assert.equal(children.hidden, false);
+  assert.equal(children.children[0].children[0].children[0].children[1].textContent, 'Research');
+  const record = children.children[1].children[0];
+  assert.equal(record.children[1].textContent, 'Unread');
+  assert.notEqual(record.children[0].children[0].getAttribute('d'), choose().children[0].children[0].getAttribute('d'));
+  picker.getClientRects = () => [{}];
+  picker.listeners.click();
+  await record.listeners.click();
+  assert.equal(picker.getAttribute('aria-expanded'), 'false');
+  assert.equal(picker.focused, true);
+  assert.equal(el('list-count').textContent, 'Items (1)');
+  assert.equal(toggle().getAttribute('aria-expanded'), 'true', 'picker can close without collapsing a folder');
+  picker.listeners.click();
+  el('library-sidebar').listeners.keydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(picker.getAttribute('aria-expanded'), 'false');
+  const folderButton = el('open-folder-form');
+  assert.equal(folderButton.disabled, false);
+  assert.equal(el('folder-form').hidden, true);
+  folderButton.listeners.click();
+  assert.equal(folderButton.getAttribute('aria-expanded'), 'true');
+  assert.equal(el('folder-name').focused, true);
+  el('folder-name').listeners.keydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(el('folder-form').hidden, true);
+  assert.equal(folderButton.focused, true);
+  await openEdit('Unread');
+  await el('edit-back').listeners.click(formEvent());
+  assert.equal(el('view-reference').getAttribute('aria-pressed'), 'true');
   const type = organizationControls().children[2]; type.value = 'tool'; await type.listeners.change();
-  el('filter-type').value = 'video'; await el('filter-type').listeners.change(); assert.equal(el('list-count').textContent, '共 0 条');
-  el('filter-type').value = 'tool'; await el('filter-type').listeners.change(); assert.equal(el('list-count').textContent, '共 1 条');
+  el('filter-type').value = 'video'; await el('filter-type').listeners.change(); assert.equal(el('list-count').textContent, 'Items (0)');
+  el('filter-type').value = 'tool'; await el('filter-type').listeners.change(); assert.equal(el('list-count').textContent, 'Items (1)');
   deletionFails = true;
   const failedPurpose = organizationControls().children[1]; failedPurpose.value = 'later'; await failedPurpose.listeners.change();
   assert.equal(failedPurpose.value, 'reference'); assert.match(el('list-status').textContent, /Network/);
@@ -201,8 +267,7 @@ test('settings pair with approval, use one language selector and group provider 
   failedPurpose.value = 'later'; await failedPurpose.listeners.change();
   await el('view-later').listeners.click();
   assert.equal(el('filter-type').value, '', 'switching sections clears type filters');
-  await el('filter-read').listeners.click();
-  const deleteButton = el('list').children[0].children[4];
+  const deleteButton = rowFor('Unread').children[3].children[1];
   const beforeDelete = calls.filter(c => c.type === 'DELETE_ITEM').length;
   await deleteButton.listeners.click();
   assert.equal(calls.filter(c => c.type === 'DELETE_ITEM').length, beforeDelete, 'cancel must not send delete');

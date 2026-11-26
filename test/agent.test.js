@@ -34,14 +34,15 @@ test('approved agent queries evidence, confirmed append survives restart and rep
   const query = await call('query'), source = query.records[0]; assert.equal(query.total, 1);
   assert.equal(source.purpose, 'later'); assert.equal(source.contentType, 'web'); assert.equal(source.starred, false);
   assert.deepEqual(source.organizationSources, { purpose: 'default', contentType: 'default', starred: 'default' });
-  assert.match(query.limitations, /reference/);
+  assert.match(query.limitations, /收藏时间/);
+  assert.ok(!Object.hasOwn(query, 'readingEvents') && !Object.hasOwn(source, 'readAt') && !Object.hasOwn(source, 'status'));
   const content = { type: 'reading_review', title: 'Test review', range: query.range, generatedAt: Date.now(), citations: [{ recordId: source.recordId, fingerprint: source.fingerprint, field: 'title', quote: 'Evidence' }], facts: [{ text: 'One saved record', citations: [0] }], inferences: [], counterEvidence: [], limitations: 'No article body', userFeedback: 'No assumptions', summary: 'One saved item; no claim about understanding.' };
   const payload = { id: randomUUID(), content, confirmation: { digest: digest(content), at: Date.now(), userMessage: '确认保存以上摘要' } };
   assert.equal((await call('save', { id: payload.id, content })).ok, false);
   const forged = structuredClone(payload); forged.content.citations[0].quote = 'Invented'; forged.confirmation.digest = digest(forged.content); assert.equal((await call('save', forged)).ok, false);
   const saved = await call('save', payload); assert.equal(saved.ok, true); assert.equal(saved.review.agentId, pair.pairId);
-  assert.equal(host.library.get(source.recordId).status, '待阅读'); assert.equal(host.library.get(source.recordId).remark, '');
-  host.library.setStatus(source.recordId, '已读');
+  assert.equal(host.library.get(source.recordId).remark, '');
+  host.library.sync([{ ...capture(), metadataUpdate: { id: randomUUID(), fields: { remark: 'Changed note' } } }]);
   assert.equal((await call('save', payload)).duplicate, true);
   assert.equal((await call('reviews', { id: payload.id })).reviews[0].changedSources[0], source.recordId);
   assert.equal((await call('save', { ...payload, id: randomUUID() })).ok, false);
@@ -50,31 +51,17 @@ test('approved agent queries evidence, confirmed append survives restart and rep
   const reopened = await createHost(config); assert.equal(reopened.library.reviews().length, 1); reopened.close();
   await host.agentPairing.manage('revoke', pair.pairId); assert.equal((await host.handleRequest(request('query'))).status, 401);
 });
-test('read timestamps represent transitions, not imports, clicks, skips or retries; history survives reopen', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'readflow-readtime-')); let now = 1000;
-  const library = await openLibrary(dir, { initialize: true, now: () => now });
-  t.after(async () => { library.close(); await rm(dir, { force: true, recursive: true }); });
-  const id = library.sync([{ ...capture(), read: true }]).articles[0].recordId;
-  assert.equal(library.get(id).readAt, null); library.setStatus(id, '已读'); assert.equal(library.get(id).readAt, null);
-  library.setStatus(id, '待阅读'); now = 2000; library.setStatus(id, '已读');
-  now = 3000; library.setStatus(id, '已读'); assert.equal(library.get(id).readAt, 2000);
-  library.applyAction('skip1', id, 'skip'); assert.equal(library.get(id).readAt, null);
-  library.applyAction('read1', id, 'read', 4000); library.applyAction('read1', id, 'read', 5000); assert.equal(library.get(id).readAt, 4000);
-  assert.equal(library.readingEvents().filter(e => e.status === '已读').length, 2);
-  const other = await openLibrary(dir); assert.equal(other.get(id).readAt, 4000); assert.equal(other.readingEvents().length, 4); other.close();
-});
-test('queries distinguish saved time from read time, preserve timezone anniversary and empty results', async t => {
+test('queries use save time, preserve timezone anniversary and empty results', async t => {
   const { host, pair, call } = await fixture(t);
   await host.agentPairing.manage('approve', pair.pairId, pair.fingerprint);
   const old = host.library.sync([{ ...capture(), url: 'https://example.com/old', savedAt: '2001-01-01T00:00:00Z' }]).articles.find(a => a.url.endsWith('/old'));
-  host.library.setStatus(old.recordId, '已读');
-  const query = await call('query', { dateBasis: 'readAt' });
+  const query = await call('query', { from: '2000-01-01T00:00:00Z', to: '2002-01-01T00:00:00Z' });
   assert.equal(query.total, 1); assert.equal(query.records[0].recordId, old.recordId);
-  assert.equal(query.readingEvents.length, 1);
+  assert.equal(query.range.basis, 'savedAt');
   assert.equal((await call('query', { recordIds: [old.recordId] })).total, 1);
   assert.equal((await call('query', { search: 'no-matching-material' })).total, 0);
   assert.equal((await call('query', { limit: 51 })).ok, false);
-  assert.equal((await call('query', { dateBasis: 'invented' })).ok, false);
+  assert.equal((await call('query', { dateBasis: 'readAt' })).ok, false);
   const now = new Date(); now.setUTCFullYear(now.getUTCFullYear() - 1);
   const anniversary = host.library.sync([{ ...capture(), url: 'https://example.com/anniversary', savedAt: now.toISOString() }]).articles.find(a => a.url.endsWith('/anniversary'));
   assert.ok((await call('query', { onThisDay: true, timeZone: 'UTC' })).records.some(a => a.recordId === anniversary.recordId));

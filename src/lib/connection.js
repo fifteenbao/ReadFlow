@@ -1,11 +1,11 @@
 import { signConnectionRequest } from './pairing-client.js';
-import { cleanDiagnostic, formatDiagnostic } from './diagnostics.js';
+import { cleanDiagnostic, DiagnosticError, formatDiagnostic } from './diagnostics.js';
 import { storedEndpoint, endpointValue, endpointPermission, collectionArchiveKey } from './endpoint.js';
 import { SafeError, readJsonResponse } from './security.js';
 import { parseConnectionUrl } from './connection-url.js';
 import { isFolderId, validFolders } from './folders.js';
 import { LIBRARY_ITEM_LIMIT } from './library-limits.js';
-const actions = new Set(['health', 'sync', 'read', 'delete', 'folders', 'preferences', 'csv']);
+const actions = new Set(['health', 'sync', 'delete', 'folders', 'preferences', 'csv']);
 export const validAccessKey = value => typeof value === 'string' && /^[A-Za-z0-9_-]{32,512}$/.test(value);
 const validIdentity = value => value && /^[A-Za-z0-9.@_:-]{1,254}$/.test(value.connectionId || '') && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(value.base || '');
 const sameIdentity = (a, b) => a.connectionId === b.connectionId && a.base === b.base;
@@ -42,15 +42,21 @@ export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermiss
         headers: { ...authHeaders, 'Content-Type': 'application/json' }, body,
         credentials: 'omit', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(180000) });
     } catch { throw new SafeError('Connection failed or timed out. Check its availability and HTTPS configuration.'); }
-    if (response.status === 401) {
-      if (authentication !== 'bearer') { const { connectionPairings = {} } = await local.get('connectionPairings');
+    if (!response.ok) {
+      const diagnostic = cleanDiagnostic((await readJsonResponse(response, 4096).catch(() => null))?.diagnostic);
+      if (response.status === 401) {
+        if (authentication === 'bearer') throw new DiagnosticError('KEY_INVALID', 'identity');
+        if (diagnostic?.code === 'CLOCK_SKEW') throw new DiagnosticError(diagnostic.code, diagnostic.stage, diagnostic);
+        const { connectionPairings = {} } = await local.get('connectionPairings');
         if (connectionPairings[target]) await local.set({ connectionPairings: { ...connectionPairings, [target]: { ...connectionPairings[target], status: 'unpaired' } } });
+        throw new DiagnosticError('PAIR_REQUIRED', 'identity');
       }
-      throw new SafeError(formatDiagnostic({ code: authentication === 'bearer' ? 'KEY_INVALID' : 'PAIR_REQUIRED', stage: 'identity' }));
+      if (diagnostic) throw new DiagnosticError(diagnostic.code, diagnostic.stage, diagnostic);
+      if (response.status === 403) throw new DiagnosticError('ORIGIN_DENIED', 'identity');
+      throw new SafeError('Connection operation failed. Check its authorization, permissions and private logs.');
     }
-    if (response.status === 403) throw new SafeError(formatDiagnostic({ code: 'ORIGIN_DENIED', stage: 'identity' }));
     const result = await readJsonResponse(response, 20 * 1024 * 1024);
-    if (!response.ok || result.ok !== true) throw new SafeError(cleanDiagnostic(result.diagnostic) ? formatDiagnostic(result.diagnostic) : 'Connection operation failed. Check its authorization, permissions and private logs.');
+    if (result.ok !== true) throw new SafeError(cleanDiagnostic(result.diagnostic) ? formatDiagnostic(result.diagnostic) : 'Connection operation failed. Check its authorization, permissions and private logs.');
     if (result.protocolVersion !== 1 || !validIdentity(result.identity)) throw new SafeError('Unsupported or invalid connection response.');
     if (identity && !sameIdentity(identity, result.identity)) throw new SafeError('Connection account or library differs from this collection. Disconnect in Settings before reassociating.');
     if (action === 'health' && (result.configuration?.storageProvider || 'database') !== selectedProvider) throw new SafeError('The connection does not match the ReadFlow database provider.');
@@ -68,7 +74,7 @@ export function createConnectionClient({ baseUrl, storage, fetchImpl, hasPermiss
       if (result.enabled !== true || result.base !== result.identity.base || !Array.isArray(result.bindings) || !Array.isArray(result.articles) ||
           result.bindings.length > 5000 ||
           result.bindings.some(b => typeof b?.id !== 'string' || !/^rec[A-Za-z0-9]+$/.test(b.recordId || '')) ||
-          result.articles.some(a => !/^rec[A-Za-z0-9]+$/.test(a?.recordId || '') || typeof a.read !== 'boolean' || typeof a.url !== 'string')) {
+          result.articles.some(a => !/^rec[A-Za-z0-9]+$/.test(a?.recordId || '') || typeof a.url !== 'string')) {
         throw new SafeError('Invalid library snapshot; local data was preserved.');
       }
       if (result.articles.length > LIBRARY_ITEM_LIMIT) {

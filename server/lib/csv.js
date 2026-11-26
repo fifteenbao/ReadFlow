@@ -13,12 +13,11 @@ export function libraryCsv(articles, folders = []) {
   for (const { id, name, parentId } of folders) {
     folderPaths.set(id, parentId ? `${folderPaths.get(parentId)} / ${name}` : name);
   }
-  const rows = [['标题', '链接', '阅读状态', '时间', '标签', '笔记', '标记已读时间', '用途', '类型', '星标', '用途来源', '类型来源', '星标来源', '文件夹路径']];
+  const rows = [['标题', '链接', '时间', '标签', '笔记', '用途', '类型', '星标', '用途来源', '类型来源', '星标来源', '文件夹路径']];
   for (const a of articles) {
     const org = organization(a), sources = organizationSources(a);
-    rows.push([a.title, a.url, a.status,
+    rows.push([a.title, a.url,
       Number.isFinite(a.savedAt) ? new Date(a.savedAt).toISOString() : '', (a.tags || []).join('; '), readingNote(a),
-      Number.isFinite(a.readAt) ? new Date(a.readAt).toISOString() : '',
       purposeLabel[org.purpose], typeLabel[org.contentType], org.starred ? '是' : '否',
       sources.purpose, sources.contentType, sources.starred, folderPaths.get(a.folderId) || '']);
   }

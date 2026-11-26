@@ -11,10 +11,10 @@ export function createHttpHandler({ baseUrl, extensionId, authenticate, connecto
     throw new SafeError('Configure an HTTPS base URL, extension ID and authentication verifier.');
   }
   const expectedOrigin = extensionId ? `chrome-extension://${extensionId}` : null;
-  const actions = new Set(['health', 'sync', 'read', 'delete', 'folders', 'preferences', 'csv', ...(pairing ? ['pair'] : [])]);
+  const actions = new Set(['health', 'sync', 'delete', 'folders', 'preferences', 'csv', ...(pairing ? ['pair'] : [])]);
   const allowedHeaders = pairing ? ['content-type', 'x-readflow-pair', 'x-readflow-time', 'x-readflow-nonce', 'x-readflow-signature'] : ['authorization', 'content-type'];
   let active = 0;
-  return async request => {
+  return async (request, transport) => {
     const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
     const send = (status, body) => {
       let text = JSON.stringify(body);
@@ -23,12 +23,15 @@ export function createHttpHandler({ baseUrl, extensionId, authenticate, connecto
     };
     const url = new URL(request.url), originHeader = request.headers.get('Origin');
     if (url.origin !== target.origin || url.search || url.hash) return send(400, { ok: false, error: 'Invalid connection URL.' });
-    if (originHeader && originHeader !== expectedOrigin) return send(403, { ok: false, error: 'Untrusted extension.' });
     const action = url.pathname.startsWith(target.apiPath) ? url.pathname.slice(target.apiPath.length) : '';
+    // An unconfigured host may report the setup error to Chrome, but never processes its request.
+    const explainMissingId = !expectedOrigin && action === 'pair' && /^chrome-extension:\/\/[a-p]{32}$/.test(originHeader || '');
+    if (originHeader && originHeader !== expectedOrigin && !explainMissingId) return send(403, { ok: false, diagnostic: { code: 'ORIGIN_DENIED', stage: 'identity' } });
     if (!actions.has(action)) return send(404, { ok: false, error: 'Unknown operation.' });
-    if (expectedOrigin && originHeader === expectedOrigin) { headers['Access-Control-Allow-Origin'] = originHeader; headers.Vary = 'Origin'; }
+    const allowedOrigin = explainMissingId || !!expectedOrigin && originHeader === expectedOrigin;
+    if (allowedOrigin) { headers['Access-Control-Allow-Origin'] = originHeader; headers.Vary = 'Origin'; }
     if (request.method === 'OPTIONS') {
-      if (!expectedOrigin || originHeader !== expectedOrigin || request.headers.get('Access-Control-Request-Method') !== 'POST' ||
+      if (!allowedOrigin || request.headers.get('Access-Control-Request-Method') !== 'POST' ||
           (request.headers.get('Access-Control-Request-Headers') || '').split(',').some(key => key.trim() && !allowedHeaders.includes(key.trim().toLowerCase()))) {
         return send(403, { ok: false, error: 'Invalid preflight.' });
       }
@@ -36,6 +39,7 @@ export function createHttpHandler({ baseUrl, extensionId, authenticate, connecto
       return send(204, null);
     }
     if (request.method !== 'POST') return send(405, { ok: false, error: 'POST required.' });
+    if (action === 'pair' && !expectedOrigin) return send(403, { ok: false, diagnostic: { code: 'EXTENSION_ID_UNSET', stage: 'identity' } });
     if (!pairing && !/^Bearer [A-Za-z0-9_-]{32,512}$/.test(request.headers.get('Authorization') || '')) return send(401, { ok: false, error: 'Access key required.' });
     if ((request.headers.get('Content-Type') || '').split(';')[0].trim() !== 'application/json' || request.headers.has('Content-Encoding')) {
       return send(415, { ok: false, error: 'Uncompressed JSON required.' });
@@ -54,8 +58,15 @@ export function createHttpHandler({ baseUrl, extensionId, authenticate, connecto
       } else {
         if (!request.headers.has('X-ReadFlow-Signature')) return send(401, { ok: false, diagnostic: { code: 'PAIR_REQUIRED', stage: 'identity' } });
         const body = await readJsonResponse(request.clone(), maxBytes);
-        try { if (await authenticate(request) !== true) return send(401, { ok: false, diagnostic: { code: 'PAIR_REQUIRED', stage: 'identity' } }); }
-        catch { return send(401, { ok: false, diagnostic: { code: 'PAIR_REQUIRED', stage: 'identity' } }); }
+        let authenticated;
+        try {
+          authenticated = await authenticate(request, transport);
+        } catch (error) {
+          if (error.diagnostic?.code === 'CLOCK_SKEW') return send(401, { ok: false, diagnostic: cleanDiagnostic(error.diagnostic) });
+          if (error.diagnostic?.code === 'LOCK_BUSY') return send(503, { ok: false, diagnostic: cleanDiagnostic(error.diagnostic) });
+          throw error;
+        }
+        if (authenticated !== true) return send(401, { ok: false, diagnostic: { code: 'PAIR_REQUIRED', stage: 'identity' } });
         return send(200, await connector.dispatch(action, body));
       }
       const body = await readJsonResponse(request, maxBytes);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ReadFlow",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Open-source Chrome extension to save articles and videos for later and organize them with tags and notes in a self-hosted library.",
   "action": {
     "default_title": "ReadFlow",

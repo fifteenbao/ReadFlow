@@ -12,8 +12,7 @@ export function organizationSources(item = {}) {
     key, ORGANIZATION_SOURCES.includes(sources[key]) ? sources[key] : 'default']));
 }
 export function inCollection(item, view) {
-  const value = organization(item);
-  return view === 'all' || value.purpose === view;
+  return organization(item).purpose === view;
 }
 // Conservative URL hints only; never classify a whole site as tools. User may correct.
 export function inferContentType(url) {

@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign, createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, lstat } from 'node:fs/promises';
 import { parseConnectionUrl } from '../src/lib/connection-url.js';
 import { readJsonResponse, SafeError, safeErrorMessage } from '../src/lib/security.js';
+import { cleanDiagnostic, formatDiagnostic } from '../src/lib/diagnostics.js';
 const [action, file, argument] = process.argv.slice(2);
 try {
   if (!['init', 'pair', 'query', 'reviews', 'preview', 'save'].includes(action) || !file) throw new SafeError('Usage: node server/agent-client.mjs init|pair|query|reviews|preview|save private/agent.json [HTTPS_URL|payload.json]');
@@ -31,7 +32,10 @@ try {
       }
       const response = await fetch(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(30000) });
       const result = await readJsonResponse(response, 20 * 1024 * 1024);
-      if (!response.ok || result.ok !== true) throw new SafeError(`ReadFlow HTTP ${response.status}: ${result.error || 'Request rejected.'}`);
+      if (!response.ok || result.ok !== true) {
+        const diagnostic = cleanDiagnostic(result.diagnostic);
+        throw new SafeError(`ReadFlow HTTP ${response.status}: ${diagnostic ? formatDiagnostic(diagnostic) : result.error || 'Request rejected.'}`);
+      }
       if (action === 'pair') { config.pairId = result.pairId; await writeFile(file, JSON.stringify(config, null, 2), { mode: 0o600 }); }
       console.log(JSON.stringify(result, null, 2));
     }

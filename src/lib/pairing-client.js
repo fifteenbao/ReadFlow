@@ -1,4 +1,5 @@
 import { SafeError, readJsonResponse } from './security.js';
+import { cleanDiagnostic, DiagnosticError } from './diagnostics.js';
 import { endpointValue, endpointPermission, storedEndpoint } from './endpoint.js';
 const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 const hex = bytes => [...new Uint8Array(bytes)].map(v => v.toString(16).padStart(2, '0')).join('');
@@ -21,9 +22,13 @@ export async function requestPairing(endpoint, { storage = chrome.storage.local,
   let response;
   try { response = await fetchImpl(endpoint + 'v1/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ publicKey: device.publicKey }), credentials: 'omit', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(30000) }); }
   catch { throw new SafeError('Connection failed or timed out. Check its availability and HTTPS configuration.'); }
-  if (response.status === 403) throw new SafeError('The extension origin is not registered on this connection (403).');
-  const result = await readJsonResponse(response, 4096);
-  if (!response.ok || result.ok !== true || !/^[a-f0-9-]{36}$/.test(result.pairId || '') || result.fingerprint !== fingerprint || !['pending', 'approved'].includes(result.status)) throw new SafeError('Pairing failed. Check the configured extension ID and pending requests on the server.');
+  const result = await readJsonResponse(response, 4096).catch(() => null);
+  if (!response.ok) {
+    const diagnostic = cleanDiagnostic(result?.diagnostic);
+    if (diagnostic) throw new DiagnosticError(diagnostic.code, diagnostic.stage, diagnostic);
+    if (response.status === 403) throw new DiagnosticError('ORIGIN_DENIED', 'identity');
+  }
+  if (!response.ok || result?.ok !== true || !/^[a-f0-9-]{36}$/.test(result.pairId || '') || result.fingerprint !== fingerprint || !['pending', 'approved'].includes(result.status)) throw new SafeError('Pairing failed. Check the configured extension ID and pending requests on the server.');
   const { connectionPairings = {} } = await storage.get('connectionPairings');
   await storage.set({ connectionPairings: { ...connectionPairings, [endpoint]: { pairId: result.pairId, fingerprint, status: result.status } } });
   return { pairId: result.pairId, fingerprint, status: result.status };

@@ -1,5 +1,3 @@
-import { READING_STATUSES } from './reading-state.js';
-
 // Chrome used to store SQLite bindings under feishu* names from the Bitable era.
 export function normalizeLibraryItem(item) {
   if (!item || typeof item !== 'object') return item;
@@ -17,11 +15,9 @@ export function normalizeLibraryItem(item) {
   delete next.feishuBase;
   delete next.feishuDeleted;
   delete next.snoozedUntil;
-  if (READING_STATUSES.includes(next.status)) next.read = next.status !== '待阅读';
-  else {
-    next.status = next.read ? '已读' : '待阅读';
-    next.read = next.status !== '待阅读';
-  }
+  delete next.status;
+  delete next.read;
+  delete next.readAt;
   return next;
 }
 export function libraryRecordId(item) {

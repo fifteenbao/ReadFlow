@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-test('worker syncs capture/status through HTTPS database', async t => {
+test('worker syncs captures and edits through HTTPS database', async t => {
   const original = { chrome: globalThis.chrome, fetch: globalThis.fetch, Date: globalThis.Date };
   let time = new original.Date(2026, 9, 12, 9).getTime();
   globalThis.Date = class extends original.Date {
@@ -85,15 +85,9 @@ test('worker syncs capture/status through HTTPS database', async t => {
   chrome.action.onClicked.emit({ id: 1, title: 'Captured', url: 'https://example.com/captured' }); await drain();
   assert.equal(articles().length, 1);
   const captured = local.items.find(item => item.url === 'https://example.com/captured');
-  const setRead = read => new Promise(resolve => chrome.runtime.onMessage.emit({ type: 'SET_READ', id: captured.id, read },
-    { id: 'test', frameId: 0, url: chrome.runtime.getURL('src/options.html') }, resolve));
-  assert.equal((await setRead(true)).ok, true);
-  assert.equal(articles().find(a => a.url === captured.url).status, '已读');
-  assert.equal(local.items.find(item => item.id === captured.id).read, true);
+  assert.ok(captured.libraryRecordId);
+  assert.equal(Object.hasOwn(captured, 'readAt'), false);
   unavailable = true;
-  const beforeFailure = structuredClone(local.items);
-  assert.equal((await setRead(false)).ok, false);
-  assert.deepEqual(local.items, beforeFailure);
   const previousKey = local.connectionAccessKey;
   const failedSettings = await new Promise(resolve => chrome.runtime.onMessage.emit(
     { type: 'SAVE_SETTINGS', settings: { language: 'zh', connectionAccessKey: 'b'.repeat(43) } },
@@ -102,18 +96,12 @@ test('worker syncs capture/status through HTTPS database', async t => {
   assert.equal(local.connectionAccessKey, previousKey);
   assert.equal(local.settings.language, 'en');
   unavailable = false;
-  assert.equal((await setRead(false)).ok, true);
-  assert.equal(articles().find(a => a.url === captured.url).status, '待阅读');
   time = new original.Date(2026, 9, 12, 10, 5).getTime();
   chrome.contextMenus.onClicked.emit({ menuItemId: 'sync-knowledge' }); await drain();
-  assert.equal(articles().every(record => record.status === '待阅读'), true);
   chrome.alarms.onAlarm.emit({ name: 'knowledge-sync' }); await drain();
+  const remoteSeed = library.sync([{ id: 'remote-seed', url: 'https://example.com/server-record', title: 'Server record', savedAt: new Date(time).toISOString() }]).articles.at(-1);
   chrome.runtime.onStartup.emit(); await drain();
-  const remoteSeed = articles()[0];
-  library.setStatus(remoteSeed.recordId, '已读');
-  time = new original.Date(2026, 9, 13, 11).getTime();
-  chrome.runtime.onStartup.emit(); await drain();
-  assert.equal(local.items.find(item => item.libraryRecordId === remoteSeed.recordId).read, true);
+  assert.ok(local.items.some(item => item.libraryRecordId === remoteSeed.recordId));
   unavailable = true;
   chrome.action.onClicked.emit({ id: 3, title: 'Offline capture', url: 'https://example.com/offline-capture' });
   await drain();
@@ -132,19 +120,13 @@ test('worker syncs capture/status through HTTPS database', async t => {
   assert.equal(handler({ type: 'SAVE_SETTINGS', settings: { language: 'zh' } },
     { id: 'test', frameId: 0, url: chrome.runtime.getURL('src/popup.html') }, () => { popupReplied = true; }), undefined);
   assert.equal(popupReplied, false);
-  const status = value => new Promise(resolve => chrome.runtime.onMessage.emit({ type: 'SET_STATUS', id: captured.id, status: value },
-    { id: 'test', url: chrome.runtime.getURL('src/options.html') }, resolve));
-  const preserved = structuredClone(local.items);
-  assert.equal((await status('跳过')).ok, false); assert.deepEqual(local.items, preserved);
+  let statusReplied = false;
+  assert.equal(handler({ type: 'SET_STATUS', id: captured.id, status: '已读' },
+    { id: 'test', url: chrome.runtime.getURL('src/options.html') }, () => { statusReplied = true; }), undefined);
+  assert.equal(statusReplied, false, 'retired reading actions are ignored');
   unavailable = false;
   chrome.alarms.onAlarm.emit({ name: 'knowledge-sync' }); await drain();
   assert.equal(articles().some(record => ['Offline capture', 'Popup capture'].includes(record.title)), false);
-  assert.equal((await status('跳过')).ok, true);
-  assert.equal(articles().find(a => a.url === captured.url).status, '跳过');
-  assert.equal(local.items.find(item => item.id === captured.id).status, '跳过');
-  assert.equal(local.items.find(item => item.id === captured.id).read, true);
-  assert.equal((await status('待阅读')).ok, true);
-  assert.equal(local.items.find(item => item.id === captured.id).read, false);
   const context = await popupSend({ type: 'CAPTURE_CONTEXT' }); assert.equal(context.url, 'https://example.com/popup-capture');
   const metadata = { tags: ['AI', 'Product'], remark: 'Compare the evidence' };
   assert.equal((await popupSend({ type: 'CAPTURE_PAGE', metadata, expectedUrl: context.url })).synced, true);

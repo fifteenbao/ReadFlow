@@ -25,6 +25,7 @@ chmod 600 private/host.json
 | `stateDir` | 私有数据库目录，例如 `./state`。路径相对于配置文件，HTTP 服务和任务使用同一目录 |
 | `connector.storageProvider` | 固定为 `database` |
 | `connector.language` | 默认语言，填 `zh` 或 `en` |
+| `trustProxyClientIp` | 默认 `false`。仅在可信本机 HTTPS 代理覆盖写入 `X-Real-IP` 时设为 `true`，用于记录最后一次认证的客户端 IP |
 
 ```sh
 node server/run.mjs init private/host.json
@@ -47,6 +48,7 @@ node server/serve.mjs private/host.json
 - 代理保留完整请求路径、`Origin`、`Content-Type` 和 `X-ReadFlow-*` 签名头，支持 POST 和 OPTIONS。访问日志省略请求正文及签名头。
 - 请求体上限为 20 MiB，认证响应应禁用缓存。
 - HTTP 服务和处理任务使用同一个非特权账号和配置。修改配置后重启服务。
+- 只有确认本机代理会丢弃客户端自带的 `X-Real-IP`、用其观测到的地址重新写入，并且外部请求不能绕过代理时，才启用 `trustProxyClientIp`。自定义托管器可用 `handleRequest(request, { clientIp })` 传入由可信网络层取得的地址。
 
 ## 3. 安装并配对 Chrome
 
@@ -54,14 +56,25 @@ node server/serve.mjs private/host.json
 
 **保持安装文件夹固定。移动解压目录可能改变扩展 ID，需要更新服务端白名单，否则会收到 `403 ORIGIN_DENIED`。扩展 ID 不是认证密钥。**
 
-在插件设置填写 HTTPS 服务地址，在 Step 2 点击“连接服务器，获取指纹”，授权该主机。点击“复制确认任务”，交给服务管理员；核对完整指纹和扩展 ID 后批准：
+在插件设置填写 HTTPS 服务地址，点击「连接服务器，获取指纹」并授权该主机。把「复制确认任务」交给信任的服务管理员或 agent。核对完整 HTTPS 地址、扩展 ID、配对 ID 和完整指纹后批准。分组指纹和四位核对码便于肉眼比对，命令需要完整的 64 位指纹。
 
 ```sh
 node server/run.mjs pair-list private/host.json
 node server/run.mjs pair-approve private/host.json --pair-id REQUEST_ID --fingerprint DISPLAYED_HEX
+node server/run.mjs pair-wait private/host.json --pair-id REQUEST_ID
 ```
 
-服务器批准后，插件自动检查授权、验证服务并保存连接，无需用户点击完成。保持设置页打开；关闭后重新打开会继续检查待处理申请。网络异常会显示重试提示，申请过期或变更需重新获取指纹并发送新的确认任务。无需填写表格链接或密钥。先收藏一条测试链接，验证数据库同步和 CSV。
+保持设置页打开。服务器批准后，插件自动验证并保存连接。批准结果回显服务路径和扩展 ID 前六位，以及同一服务下已批准的其他设备。撤销旧设备前先向用户确认。
+
+`pair-wait` 默认等 90 秒，可用 `--timeout` 指定 1–600 秒。收到有效签名才返回 `lastSeenAt`（Unix 毫秒）。超时表示尚未观察到客户端认证。先检查插件的连接状态，再收藏一条测试链接验证数据库同步和 CSV。浏览器首次认证后，`pair-list` 也显示最近成功认证时间。只有从可信网络层取得地址时才记录 `lastUsedIp`，该字段仅供本机管理命令查看。
+
+| 诊断码 | 下一步 |
+| --- | --- |
+| `PAIR_EXPIRED` | 在插件中重新获取申请并复制确认任务 |
+| `FINGERPRINT_MISMATCH` | 比对当前申请的配对 ID 和完整指纹 |
+| `DEVICE_LIMIT` | 用 `pair-list` 找到明确不再使用的设备，撤销后重试 |
+| `EXTENSION_ID_UNSET` | 把插件提示中的扩展 ID 填入 `host.json`，重启服务 |
+| `CLOCK_SKEW` | 根据提示中的服务端 UTC 时间校准 Chrome 设备和服务器时钟，然后重试 |
 
 ### 拒绝与撤销浏览器配对
 
@@ -72,13 +85,13 @@ node server/run.mjs pair-reject private/host.json --pair-id YOUR_PAIR_REQUEST_ID
 node server/run.mjs pair-revoke private/host.json --pair-id YOUR_APPROVED_PAIR_ID
 ```
 
-待批准申请十分钟过期。每个浏览器配对范围最多保留三个待批准申请和十六个已批准设备。过期后请重新获取指纹。重新安装扩展、换 Chrome 配置文件或改变服务地址后，可能需要重新配对。
+待批准申请十分钟过期。`pair-list` 将未清理的过期申请标在 `expired`，这些申请不占三个待批准名额。浏览器配对最多保留十六个已批准设备。重新安装扩展、换 Chrome 配置文件或改变服务地址后，可能需要重新配对。
 
 浏览器本地保存私钥，服务端保留公钥。撤销需要在服务端执行 `pair-revoke`，之后该设备无法发出有效签名请求。保护好 Chrome 配置文件。
 
 ## 4. CSV 导出
 
-设置中的“下载 CSV”刷新后下载数据库全部素材。列为标题、链接、阅读状态、时间、标签、笔记、标记已读时间、用途、类型、星标、三项来源及文件夹路径。
+设置中的“下载 CSV”刷新后下载数据库全部素材。列为标题、链接、时间、标签、笔记、用途、类型、星标、三项来源及文件夹路径。
 
 ## 备份、运维与升级
 
@@ -90,10 +103,12 @@ SQLite 使用 FULL 同步提交和 DELETE 日志，由进程间锁保护写入�
 
 ### 升级已有服务
 
+升级到 V0.5.0 时，请在同一次升级中更新 Chrome 插件和自建服务。新版服务的同步响应取消了阅读状态字段，旧插件依赖这些字段。使用原安装目录重新加载新插件，以保留扩展 ID。
+
 1. 记录当前提交和启动方式，检查是否有本地改动，暂停写入并完成备份。
 2. 更新到目标版本，核对 `package.json` 和 `manifest.json` 的版本一致。运行 `npm test`、`npm run security` 和 `npm run doctor -- --config private/host.json`。
 3. 以原配置、原 `stateDir`、原账号、HTTPS 子路径和进程管理方式重启。继续使用现有数据库和配对身份。若旧部署的入口仍指向原目录，将启动命令改为 `node server/serve.mjs`，把已有任务改用 `node server/run.mjs`，保留各自原有参数。
-4. 在实际部署中检查 HTTPS、浏览器配对、旧收藏及已读时间、CSV。插件与服务端代码配套时，在资料夹验证新建文件夹和移动素材。
+4. 在实际部署中检查 HTTPS、浏览器配对、旧收藏和 CSV。插件与服务端代码配套时，在文件夹验证创建和移动素材。
 5. 若需回滚，保留诊断并暂停新写入，再从备份恢复所需代码和状态。处理好升级后新增的资料。
 
 ## 交给 agent 配置
@@ -102,7 +117,7 @@ SQLite 使用 FULL 同步提交和 DELETE 日志，由进程间锁保护写入�
 
 1. 只检查相关运行环境、HTTPS、私有存储和调度能力，不扫描无关凭证；新增平台、账号或费用前先征求同意。
 2. 按上述顺序初始化、检查、安装和配对。核对完整指纹后才批准，不通过重置数据库来掩盖错误。
-3. 在授权范围验证收藏去重、标签／笔记修改、断网保存失败且无本地暂存、未读／已读切换、文件夹创建与移动，以及 CSV，区分模拟测试与真实验证。
+3. 在授权范围验证收藏去重、编辑页修改标签和笔记、断网保存失败且无本地暂存、文件夹创建与移动，以及 CSV，区分模拟测试与真实验证。
 4. 若用户另行要求验证 agent 接口，检查其 HTTPS 可达性和签名能力，按[下文](#agent-接入与配对)完成独立配对与查询验证。
 5. 交付服务地址、固定安装目录、验证结果、备份位置和未完成事项。配置助手不等于内置 AI Review。
 
@@ -134,4 +149,4 @@ node server/run.mjs agent-pair-approve private/host.json --pair-id 'PAIR_ID' --f
 
 ## 完成标准
 
-确认 Chrome 收藏成功入库，元数据与阅读状态一致，并能在 CSV 中找到该素材。若另行验证 agent 接口，单独记录配对和查询结果。
+确认 Chrome 收藏成功入库，元数据正确，并能在 CSV 中找到该素材。若另行验证 agent 接口，单独记录配对和查询结果。

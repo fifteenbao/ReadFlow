@@ -2,17 +2,16 @@ import { normalizeCaptureMetadata, noteLength, MAX_REMARK_LENGTH } from './lib/c
 import { isFolderName } from './lib/folders.js';
 import { organization, inCollection, CONTENT_TYPES } from './lib/organization.js';
 import { readingNote } from './lib/reading-note.js';
-import { isUnread, readingStatus } from './lib/reading-state.js';
 import { libraryRecordId, isLibraryDeleted } from './lib/library-binding.js';
-import { initialRoute, initialView, ROUTES } from './lib/navigation.js';
+import { parseHash, ROUTES } from './lib/navigation.js';
 import { chooseLanguage, translate, localizeError } from './lib/options-i18n.js';
 import { endpointValue, requestEndpointPermission } from './lib/endpoint.js';
 import { isSafeArticleUrl } from './lib/security.js';
-// Unsaved edits live only in this open page, never in storage or an upload queue.
-const editorDrafts = new Map();
+import { displayPairingFingerprint } from './lib/pairing-fingerprint.js';
 let uiLanguage = 'zh', pairingView = null;
 const t = (key, values) => translate(uiLanguage, key, values);
-const errorText = error => localizeError(error, uiLanguage);
+const errorText = error => error?.diagnostic?.code === 'EXTENSION_ID_UNSET'
+  ? t('extensionIdUnset', { extensionId: chrome.runtime.id }) : localizeError(error, uiLanguage);
 const locale = () => uiLanguage === 'zh' ? 'zh-CN' : 'en';
 // The background worker serializes reading-data mutations; interface language stays local.
 
@@ -56,22 +55,26 @@ function savedAgo(iso) {
   return then.toLocaleDateString(locale(), { month: "short", day: "numeric" });
 }
 
-let selectedStatus = '待阅读', selectedView = initialView(globalThis.location?.hash) || 'later';
+let selectedView = parseHash(globalThis.location?.hash).view || 'later';
 let selectedFolder = '', selectedItem = null, selectedTag = '';
+const expandedFolders = new Set();
 const unfiled = 'unfiled';
-const views = [['later', '稍后看'], ['reference', '资料夹'], ['all', '全部']];
+const views = [['later', 'viewLater'], ['reference', 'viewReference']];
 const typeNames = { article: '文章', video: '视频', tool: '工具', web: '其他网页' };
-const purposeNames = { later: '稍后看', reference: '留作资料' };
+const collectionHash = view => `#reading-list/${view}`;
+const folderIcon = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
+const recordIcon = ['M6 3h8l4 4v14H6z M14 3v5h4', 'M9 12h6m-6 4h6'];
+const chevronIcon = ['M9 6l6 6-6 6'];
 let listEmptyMessage = '';
 function clearListFilters() {
-  for (const id of ['filter-type', 'filter-search', 'filter-status']) element(id).value = '';
+  for (const id of ['filter-type', 'filter-search']) element(id).value = '';
   element('filter-starred').checked = false;
-  selectedStatus = '待阅读';
   selectedTag = '';
   selectedFolder = '';
   selectedItem = null;
+  closeFolderForm(false);
+  setFolderPickerOpen(false);
 }
-const statusTabs = [['filter-unread', '待阅读', 'unread'], ['filter-read', '已读', 'read']];
 function navButton(label, active, onClick) {
   const button = document.createElement('button');
   button.type = 'button';
@@ -81,41 +84,113 @@ function navButton(label, active, onClick) {
   return button;
 }
 
-function renderSidebar(items, folders) {
+function setFolderPickerOpen(open, restoreFocus = false) {
+  const picker = element('folder-picker');
+  picker.setAttribute('aria-expanded', String(open));
+  if (restoreFocus) picker.focus();
+}
+
+function folderPickerIsOpen() {
+  const picker = element('folder-picker');
+  return picker.getAttribute('aria-expanded') === 'true' && picker.getClientRects?.().length > 0;
+}
+
+async function selectFromTree(folderId, itemId, buttonId) {
+  const returnToPicker = folderPickerIsOpen();
+  if (itemId !== null) clearListFilters();
+  else if (selectedFolder !== folderId) closeFolderForm(false);
+  selectedFolder = folderId;
+  selectedItem = itemId;
+  setFolderPickerOpen(false, returnToPicker);
+  await renderList();
+  if (!returnToPicker) element(buttonId)?.focus();
+}
+
+function groupByFolder(entries, getFolderId) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const id = getFolderId(entry);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(entry);
+  }
+  return groups;
+}
+
+function renderSidebar(items, folders, folderItems) {
   const sidebar = element('library-sidebar');
-  const reference = selectedView === 'reference';
-  sidebar.hidden = selectedView === 'later';
-  element('folder-panel').hidden = !reference;
+  sidebar.hidden = selectedView !== 'reference';
   if (sidebar.hidden) return;
-  const tagNames = [...new Set(items.flatMap(item => item.tags || []))].sort((a, b) => a.localeCompare(b, locale()));
+  const tagNames = [...new Set(folderItems.flatMap(item => item.tags || []))].sort((a, b) => a.localeCompare(b, locale()));
   const selectTag = tag => () => { selectedTag = tag; selectedItem = null; return renderList(); };
   element('library-tags').replaceChildren(navButton('全部标签', !selectedTag, selectTag('')),
     ...tagNames.map(tag => navButton(tag, selectedTag === tag, selectTag(tag))));
-  if (!reference) return;
 
-  const selectFolder = id => () => { selectedFolder = id; selectedItem = null; return renderList(); };
-  const tree = element('library-folders');
-  const renderBranch = (id, name, parent) => {
-    const branch = document.createElement('div');
+  const foldersByParent = groupByFolder(folders, folder => folder.parentId);
+  const itemsByFolder = groupByFolder(items, item => item.folderId || unfiled);
+  const directory = element('library-folders');
+  const focusedId = directory.contains?.(document.activeElement) ? document.activeElement.id : '';
+  const tree = document.createElement('ul');
+  tree.className = 'folder-tree';
+  function choice(label, folderId, itemId = null) {
+    const buttonId = itemId === null ? `folder-choice-${folderId}` : `folder-record-${itemId}`;
+    const active = itemId === null ? selectedFolder === folderId : selectedItem === itemId;
+    const button = navButton('', active, () => selectFromTree(folderId, itemId, buttonId));
+    button.id = buttonId;
+    button.className = 'folder-choice';
+    const name = document.createElement('span');
+    name.textContent = label;
+    button.replaceChildren(svg(itemId === null ? [folderIcon] : recordIcon), name);
+    return button;
+  }
+  function renderBranch(id, name, parent, depth) {
+    const branch = document.createElement('li');
     branch.className = 'folder-branch';
-    branch.appendChild(navButton(name, selectedFolder === id, selectFolder(id)));
-    if (selectedFolder === id && id !== '') {
-      const children = items.filter(item => (item.folderId || unfiled) === id);
-      for (const item of children) {
-        const button = navButton(item.title || item.url, selectedItem === item.id, () => {
-          selectedItem = selectedItem === item.id ? null : item.id;
-          return renderList();
-        });
-        button.className = 'folder-item';
-        branch.appendChild(button);
+    const row = document.createElement('div');
+    row.className = 'folder-branch-row';
+    row.style.paddingInlineStart = `${Math.min(depth, 4) * 9}px`;
+    branch.appendChild(row);
+    const subfolders = foldersByParent.get(id) || [];
+    const records = itemsByFolder.get(id) || [];
+    if (subfolders.length || records.length) {
+      const children = document.createElement('ul');
+      children.id = `folder-children-${id}`;
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.id = `folder-toggle-${id}`;
+      toggle.className = 'folder-toggle';
+      toggle.setAttribute('aria-controls', children.id);
+      toggle.appendChild(svg(chevronIcon));
+      function showChildren(open) {
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', t(open ? 'folderCollapse' : 'folderExpand', { name }));
+        children.hidden = !open;
+        if (!open || children.children.length) return;
+        for (const folder of subfolders) renderBranch(folder.id, folder.name, children, depth + 1);
+        for (const item of records) {
+          const entry = document.createElement('li');
+          entry.className = 'folder-record';
+          entry.style.paddingInlineStart = `${26 + Math.min(depth + 1, 4) * 9}px`;
+          entry.appendChild(choice(item.title || item.url, id, item.id));
+          children.appendChild(entry);
+        }
       }
+      toggle.addEventListener('click', () => {
+        const open = !expandedFolders.has(id);
+        if (open) expandedFolders.add(id); else expandedFolders.delete(id);
+        showChildren(open);
+      });
+      row.appendChild(toggle);
+      branch.appendChild(children);
+      showChildren(expandedFolders.has(id));
     }
-    for (const folder of folders.filter(folder => folder.parentId === id)) renderBranch(folder.id, folder.name, branch);
+    row.appendChild(choice(name, id));
     parent.appendChild(branch);
-  };
-  tree.replaceChildren(navButton('全部资料', !selectedFolder, selectFolder('')));
-  renderBranch(unfiled, '未归档', tree);
-  for (const folder of folders.filter(folder => folder.parentId === null)) renderBranch(folder.id, folder.name, tree);
+  }
+  renderBranch('', t('folderOverview'), tree, 0);
+  renderBranch(unfiled, t('folderUnfiled'), tree, 0);
+  for (const folder of foldersByParent.get(null) || []) renderBranch(folder.id, folder.name, tree, 0);
+  directory.replaceChildren(tree);
+  if (focusedId) element(focusedId)?.focus();
 }
 
 async function renderList() {
@@ -123,7 +198,6 @@ async function renderList() {
   const [itemsSnapshot, { knowledgeSync }] = await Promise.all([getItems(), chrome.storage.local.get('knowledgeSync')]);
   const all = itemsSnapshot.filter(item => !isLibraryDeleted(item));
   const folders = knowledgeSync?.folders || [];
-  const inQueue = selectedView === 'later';
   const reference = selectedView === 'reference';
   if (selectedFolder && selectedFolder !== unfiled && !folders.some(folder => folder.id === selectedFolder)) {
     selectedFolder = '';
@@ -132,51 +206,49 @@ async function renderList() {
   const viewItems = all.filter(item => inCollection(item, selectedView));
   const folderItems = reference && selectedFolder ? viewItems.filter(item => (item.folderId || unfiled) === selectedFolder) : viewItems;
   if (selectedTag && !folderItems.some(item => item.tags?.includes(selectedTag))) selectedTag = '';
-  renderSidebar(folderItems, folders);
   element('library-workspace').setAttribute('data-view', selectedView);
   element('folder-title').hidden = !reference;
-  element('folder-title').textContent = selectedFolder === unfiled ? '未归档' : folders.find(folder => folder.id === selectedFolder)?.name || '全部资料';
+  const folderName = selectedFolder === unfiled ? t('folderUnfiled') : folders.find(folder => folder.id === selectedFolder)?.name || t('folderOverview');
+  element('folder-title').textContent = folderName;
+  element('folder-picker-name').textContent = folderName;
+  element('folder-picker').hidden = !reference;
   const canCreateFolders = Array.isArray(knowledgeSync?.folders);
-  element('folder-form').hidden = !canCreateFolders;
+  const folderAction = t(selectedFolder && selectedFolder !== unfiled ? 'folderAddChild' : 'folderAdd');
+  const folderButton = element('open-folder-form');
+  folderButton.disabled = !reference || !canCreateFolders || element('create-folder').disabled;
+  folderButton.title = folderAction;
+  folderButton.setAttribute('aria-label', folderAction);
+  if (!reference || !canCreateFolders) closeFolderForm(false);
   element('folder-help').hidden = canCreateFolders || !knowledgeSync?.at || !!knowledgeSync.error;
-  element('folder-create-label').textContent = selectedFolder && selectedFolder !== unfiled ? '新建子文件夹' : '新建文件夹';
+  element('folder-create-label').textContent = folderAction;
   for (const [view, label] of views) {
-    element(`view-${view}`).textContent = `${label} (${all.filter(item => inCollection(item, view) && (view !== 'later' || readingStatus(item) !== '跳过')).length})`;
+    element(`view-${view}`).textContent = `${t(label)} (${all.filter(item => inCollection(item, view)).length})`;
     element(`view-${view}`).setAttribute('aria-pressed', String(view === selectedView));
   }
-  const type = inQueue ? '' : element('filter-type').value;
-  const query = inQueue ? '' : element('filter-search').value.trim().toLocaleLowerCase();
-  const tag = inQueue ? '' : selectedTag;
-  const starredOnly = !inQueue && element('filter-starred').checked;
-  const scope = folderItems.filter(item => (!starredOnly || organization(item).starred) &&
+  const type = reference ? element('filter-type').value : '';
+  const query = reference ? element('filter-search').value.trim().toLocaleLowerCase() : '';
+  const tag = reference ? selectedTag : '';
+  const starredOnly = reference && element('filter-starred').checked;
+  const matches = folderItems.filter(item => (!starredOnly || organization(item).starred) &&
     (!type || organization(item).contentType === type) &&
     (!tag || item.tags?.includes(tag)) && (!query || [item.title, item.url, readingNote(item)].join(' ').toLocaleLowerCase().includes(query)));
-  element('collection-filters').hidden = inQueue;
-  element('home-counts').hidden = !inQueue;
-  element('reading-status-tabs').hidden = !inQueue;
-  element('filter-status-label').hidden = selectedView !== 'all';
-  const status = inQueue ? selectedStatus : reference ? '' : element('filter-status').value;
-  const matches = scope.filter(item => !status || organization(item).purpose === 'later' && readingStatus(item) === status);
+  element('collection-filters').hidden = !reference;
   if (selectedItem && !matches.some(item => item.id === selectedItem)) selectedItem = null;
+  renderSidebar(viewItems, folders, folderItems);
   const items = selectedItem ? matches.filter(item => item.id === selectedItem) : matches;
-  if (inQueue) items.sort((a, b) => (Date.parse(b.savedAt) || 0) - (Date.parse(a.savedAt) || 0));
-  listEmptyMessage = type || query || tag || starredOnly || status && !inQueue ? '没有匹配的内容，请调整或清除筛选。' :
-    reference ? '这里还没有资料。可以从其他文件夹移入，或将网页收藏为资料。' : '当前没有内容。打开网页后使用插件收藏，或切换阅读状态。';
-  for (const [id, value, key] of statusTabs) {
-    element(id).textContent = `${t(key)} (${scope.filter(item => organization(item).purpose === 'later' && readingStatus(item) === value).length})`;
-    element(id).setAttribute('aria-pressed', String(selectedStatus === value));
-  }
+  if (!reference) items.sort((a, b) => (Date.parse(b.savedAt) || 0) - (Date.parse(a.savedAt) || 0));
+  listEmptyMessage = t(type || query || tag || starredOnly ? 'emptyFilters' : reference ? 'emptyFolders' : 'emptyLater');
   list.replaceChildren();
 
   const count = document.getElementById("list-count");
-  count.textContent = `共 ${items.length} 条`;
+  count.textContent = t('listCount', { count: items.length });
 
   if (items.length === 0) {
     list.appendChild(emptyState());
     return;
   }
 
-  items.forEach((item, i) => list.appendChild(renderItem(item, i, folders)));
+  for (const item of items) list.appendChild(renderItem(item, folders));
 }
 
 function emptyState() {
@@ -190,37 +262,22 @@ function emptyState() {
   const h = document.createElement("p");
   h.className = "display";
   h.textContent = listEmptyMessage;
-  const p = document.createElement("p");
-  p.textContent = t('emptyHint');
-  li.append(ornament, h, p);
+  li.append(ornament, h);
   return li;
 }
 
-function renderItem(item, index, folders) {
+function closeFolderForm(focus) {
+  element('folder-form').hidden = true;
+  element('open-folder-form').setAttribute('aria-expanded', 'false');
+  const name = element('folder-name');
+  name.value = '';
+  name.removeAttribute('aria-invalid');
+  if (focus) element('open-folder-form').focus();
+}
+
+function renderItem(item, folders) {
   const li = document.createElement("li");
   li.className = "item collection-row";
-
-  const check = document.createElement('select');
-  check.className = 'status-select';
-  check.setAttribute('aria-label', t('readingStatus', { title: item.title }));
-  check.setAttribute('aria-describedby', 'list-status');
-  for (const [, value, key] of statusTabs) {
-    const option = document.createElement('option'); option.value = value; option.textContent = t(key); check.appendChild(option);
-  }
-  if (readingStatus(item) === '跳过') {
-    const previous = document.createElement('option');
-    previous.value = '跳过'; previous.textContent = '已跳过'; previous.disabled = true;
-    check.appendChild(previous);
-  }
-  check.value = readingStatus(item);
-  check.hidden = organization(item).purpose === 'reference';
-  check.addEventListener('change', async () => {
-    const status = check.value; check.disabled = true;
-    document.getElementById('list-status').textContent = '';
-    try { await mutate({ type: 'SET_STATUS', id: item.id, status }); await renderList(); await renderHome(); }
-    catch (error) { check.value = readingStatus(item); document.getElementById('list-status').textContent = errorText(error); }
-    finally { check.disabled = false; }
-  });
 
   // Title + meta. Clicking the title opens the article in a new tab.
   const body = document.createElement("div");
@@ -238,20 +295,17 @@ function renderItem(item, index, folders) {
   meta.className = "item-meta";
   const bits = [t('itemMeta', { domain: domainOf(item.url), date: savedAgo(item.savedAt) })];
   if (selectedView !== 'later') bits.push(typeNames[fields.contentType]);
-  if (selectedView === 'all') bits.push(purposeNames[fields.purpose]);
-  if (Number.isFinite(item.readAt)) bits.push(`标记已读 ${new Date(item.readAt).toLocaleString(locale())}`);
   meta.append(document.createTextNode(bits.join(' · ')));
 
   body.append(title, meta);
   const controls = document.createElement('div'); controls.className = 'item-organization';
-  async function update(control, metadata, confirmed = () => {}) {
+  async function update(control, metadata) {
     control.disabled = true; element('list-status').textContent = '正在保存…';
     try {
       await mutate({ type: 'UPDATE_METADATA', id: item.id, metadata });
-      confirmed();
-      await renderList(); await renderHome();
+      await renderList();
       if (Object.hasOwn(metadata, 'purpose')) {
-        element('list-status').textContent = metadata.purpose === 'reference' ? '已移到资料夹' : '已加入稍后看';
+        element('list-status').textContent = metadata.purpose === 'reference' ? '已移到文件夹' : '已加入稍后看';
       } else if (Object.hasOwn(metadata, 'folderId')) {
         element('list-status').textContent = metadata.folderId ? '已移到所选文件夹' : '已移到未归档';
       } else if (Object.hasOwn(metadata, 'starred')) {
@@ -300,49 +354,19 @@ function renderItem(item, index, folders) {
     const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = value; tags.appendChild(tag);
   }
   if (!item.tags?.length) tags.textContent = t('noTags');
-  function textEditor(key, original, label, parse) {
-    const draftKey = `${item.id}:${key}`;
-    const editor = document.createElement('div'); editor.className = 'inline-editor';
-    const grow = document.createElement('div'); grow.className = 'growing-text';
-    const input = document.createElement('textarea'); input.rows = 1;
-    input.value = editorDrafts.get(draftKey) ?? original;
-    input.setAttribute('aria-label', `${label}：${item.title || item.url}`);
-    const mirror = document.createElement('div'); mirror.className = 'text-mirror'; mirror.setAttribute('aria-hidden', 'true');
-    const hint = document.createElement('p'); hint.className = 'field-hint'; hint.id = `editor-${index}-${key}`;
-    input.setAttribute('aria-describedby', hint.id);
-    const save = document.createElement('button'); save.type = 'button'; save.textContent = `保存${label}`;
-    const feedback = document.createElement('p'); feedback.className = 'field-hint'; feedback.setAttribute('role', 'status');
-    function refresh() {
-      mirror.textContent = input.value + '\n';
-      const over = key === 'remark' && noteLength(input.value) > MAX_REMARK_LENGTH;
-      hint.textContent = key === 'remark' ? `${noteLength(input.value)} / 140 字${over && input.value === original ? ' · 旧笔记完整保留，修改后需不超过 140 字' : ''}` : '每行一个标签，每个最多 50 字；留空并保存可清除标签。';
-      input.setAttribute('aria-invalid', String(over && input.value !== original));
-      save.disabled = input.value === original || over;
-    }
-    input.addEventListener('input', () => {
-      if (input.value === original) editorDrafts.delete(draftKey); else editorDrafts.set(draftKey, input.value);
-      feedback.textContent = '尚未保存'; refresh();
-    });
-    save.addEventListener('click', async () => {
-      if (save.disabled) return;
-      let metadata;
-      try { metadata = normalizeCaptureMetadata({ [key]: parse(input.value) }); }
-      catch (error) { input.setAttribute('aria-invalid', 'true'); feedback.textContent = errorText(error); return; }
-      input.disabled = true; feedback.textContent = '正在保存…';
-      const result = await update(save, metadata, () => editorDrafts.delete(draftKey));
-      input.disabled = false;
-      if (result === false) { feedback.textContent = '保存失败，输入仍保留。请点击保存重试；关闭页面会丢失未保存内容。'; refresh(); }
-    });
-    grow.append(input, mirror); editor.append(grow, hint, save, feedback); refresh();
-    return editor;
-  }
-  tags.appendChild(textEditor('tags', (item.tags || []).join('\n'), '标签', value => value.split(/\r?\n/).map(tag => tag.trim()).filter(Boolean)));
-  const note = textEditor('remark', readingNote(item), '笔记', value => value);
-  note.className = 'collection-note inline-editor';
+  const note = document.createElement('p');
+  note.className = 'collection-note';
+  note.textContent = readingNote(item);
+  const actions = document.createElement('div');
+  actions.className = 'item-actions';
+  const edit = document.createElement('a');
+  edit.className = 'item-edit';
+  edit.href = `${collectionHash(selectedView)}/edit/${encodeURIComponent(item.id)}`;
+  edit.textContent = t('editLink');
+  edit.setAttribute('aria-label', t('editLinkLabel', { title: title.textContent }));
 
-
-  // Delete button.
   const del = document.createElement("button");
+  del.type = 'button';
   del.className = "del";
   del.title = t('remove');
   del.setAttribute('aria-label', del.title);
@@ -351,12 +375,98 @@ function renderItem(item, index, folders) {
     if (!globalThis.confirm(t(libraryRecordId(item) ? 'deleteConfirm' : 'deleteLocalConfirm', { title: item.title || item.url }))) return;
     del.disabled = true;
     element('list-status').textContent = t('deleting');
-    try { await mutate({ type: 'DELETE_ITEM', id: item.id }); editorDrafts.delete(`${item.id}:remark`); editorDrafts.delete(`${item.id}:tags`); await renderList(); await renderHome(); element('list-status').textContent = t('deleted'); }
+    try { await mutate({ type: 'DELETE_ITEM', id: item.id }); await renderList(); element('list-status').textContent = t('deleted'); }
     catch (error) { del.disabled = false; element('list-status').textContent = t('deleteFailed', { reason: errorText(error) }); }
   });
 
-  li.append(body, tags, note, check, del);
+  actions.append(edit, del);
+  li.append(body, tags, note, actions);
   return li;
+}
+
+// The editor holds unsaved text in this tab only.
+let editSession = null;
+
+function renderNoteCount() {
+  const note = element('edit-note');
+  const count = noteLength(note.value);
+  const over = count > MAX_REMARK_LENGTH;
+  const unchanged = note.value === editSession?.original.remark;
+  const key = over && unchanged ? 'editLegacyNoteCount' : 'editNoteCount';
+  element('edit-note-count').textContent = t(key, { count, limit: MAX_REMARK_LENGTH });
+  if (over && !unchanged) note.setAttribute('aria-invalid', 'true');
+}
+
+function openEditor(item) {
+  const returnTo = collectionHash(selectedView);
+  element('edit-back').href = returnTo;
+  element('edit-cancel').href = returnTo;
+  element('edit-form').hidden = !item;
+  element('edit-missing').hidden = !!item;
+  element('edit-item-name').textContent = item ? item.title?.trim() || item.url || t('untitled') : '';
+  if (!item) { editSession = null; return; }
+
+  const tags = element('edit-tags'), note = element('edit-note');
+  tags.value = (item.tags || []).join('\n');
+  note.value = readingNote(item);
+  editSession = { itemId: item.id, original: { tags: tags.value, remark: note.value }, saving: false };
+  tags.removeAttribute('aria-invalid');
+  note.removeAttribute('aria-invalid');
+  element('edit-feedback').textContent = '';
+  setEditorBusy(false);
+  renderNoteCount();
+}
+
+function setEditorBusy(saving) {
+  element('edit-form').setAttribute('aria-busy', String(saving));
+  for (const id of ['edit-tags', 'edit-note', 'edit-save']) element(id).disabled = saving;
+}
+
+async function returnToList() {
+  history.replaceState(null, '', collectionHash(selectedView));
+  await showLocation({ focus: true });
+}
+
+async function saveEditor(event) {
+  event.preventDefault();
+  const session = editSession;
+  if (!session || session.saving) return;
+  const feedback = element('edit-feedback');
+  const metadata = {};
+  for (const [key, id] of [['tags', 'edit-tags'], ['remark', 'edit-note']]) {
+    const input = element(id);
+    if (input.value === session.original[key]) continue;
+    const value = key === 'tags' ? input.value.split(/\r?\n/).map(tag => tag.trim()).filter(Boolean) : input.value;
+    try { Object.assign(metadata, normalizeCaptureMetadata({ [key]: value })); }
+    catch (error) {
+      input.setAttribute('aria-invalid', 'true');
+      feedback.setAttribute('data-state', 'error');
+      feedback.textContent = errorText(error);
+      input.focus();
+      return;
+    }
+  }
+  if (!Object.keys(metadata).length) return returnToList();
+
+  session.saving = true;
+  setEditorBusy(true);
+  feedback.setAttribute('data-state', 'info');
+  feedback.textContent = t('editSaving');
+  try {
+    await mutate({ type: 'UPDATE_METADATA', id: session.itemId, metadata });
+    if (editSession !== session) return;
+    await returnToList();
+    element('list-status').textContent = t('editSaved');
+  } catch (error) {
+    if (editSession !== session) return;
+    feedback.setAttribute('data-state', 'error');
+    feedback.textContent = t('editFailed', { reason: errorText(error) });
+  } finally {
+    if (editSession === session) {
+      session.saving = false;
+      setEditorBusy(false);
+    }
+  }
 }
 
 // ===========================================================================
@@ -365,7 +475,7 @@ function renderItem(item, index, folders) {
 
 async function mutate(message) {
   const result = await chrome.runtime.sendMessage(message);
-  if (!result?.ok) throw new Error(result?.error || t('genericFailure'));
+  if (!result?.ok) throw Object.assign(new Error(result?.error || t('genericFailure')), { diagnostic: result?.diagnostic });
   return result;
 }
 let connection = null, pairingState = { approved: false }, validationSequence = 0, checkingConnection = false;
@@ -375,17 +485,35 @@ let currentRoute = 'settings';
 let configuredLibrary = false, busyAction = null;
 function applyRoute(route) {
   currentRoute = ROUTES.includes(route) ? route : 'settings';
+  if (currentRoute !== 'reading-list') setFolderPickerOpen(false);
   for (const view of ROUTES) element(view).hidden = view !== currentRoute;
+  const activeSection = currentRoute === 'edit-item' ? 'reading-list' : currentRoute;
   for (const [id, view] of [['nav-collection', 'reading-list'], ['nav-settings', 'settings']]) {
-    if (view === currentRoute) element(id).setAttribute('aria-current', 'page'); else element(id).removeAttribute('aria-current');
+    if (view === activeSection) element(id).setAttribute('aria-current', 'page'); else element(id).removeAttribute('aria-current');
   }
-  document.title = `ReadFlow · ${t(currentRoute === 'reading-list' ? 'collection' : currentRoute)}`;
+  document.title = `ReadFlow · ${t({ 'reading-list': 'collection', 'edit-item': 'editItem', settings: 'settings' }[currentRoute])}`;
 }
-async function renderHome() {
-  const items = (await getItems()).filter(item => !isLibraryDeleted(item) && organization(item).purpose === 'later');
-  element('home-counts').textContent = t('homeCounts', { unread: items.filter(isUnread).length, read: items.filter(item => readingStatus(item) === '已读').length });
-  element('collection-setup').hidden = configuredLibrary;
-  element('home-status').textContent = t(connection?.connected && pairingState.approved ? 'homeReady' : 'homeNeedsSetup');
+async function showLocation({ refresh = false, focus = false } = {}) {
+  const hash = location.hash;
+  const previousRoute = currentRoute;
+  const { route, view, itemId } = parseHash(hash);
+  const nextView = view || (hash.startsWith('#reading-list/') ? 'later' : selectedView);
+  if (nextView !== selectedView) { selectedView = nextView; clearListFilters(); }
+  if (route === 'edit-item') {
+    const item = (await getItems()).find(item => item.id === itemId && !isLibraryDeleted(item));
+    if (location.hash !== hash) return;
+    applyRoute(route);
+    openEditor(item);
+    if (focus) element('edit-heading').focus();
+    return;
+  }
+  editSession = null;
+  applyRoute(route);
+  if (route === 'reading-list') {
+    await renderList();
+    if (focus && previousRoute === 'edit-item' && currentRoute === 'reading-list') element('list-heading').focus();
+    if (refresh) await refreshLibrary();
+  }
 }
 function fillSettings(settings) {
   element('connectionUrl').value = settings.connectionUrl ?? '';
@@ -399,11 +527,12 @@ function renderPairingStatus() {
   let visibleEndpoint = '';
   try { visibleEndpoint = endpointValue(element('connectionUrl').value); } catch {}
   const pair = pairingView || (visibleEndpoint === pairingState.baseUrl ? pairingState : { status: 'unpaired' });
+  const fingerprint = displayPairingFingerprint(pair.fingerprint);
   element('pair-status').textContent = t(pair.approved || pair.status === 'approved' ? 'pairApproved' : pair.status === 'pending' ? 'pairPending' : 'pairUnpaired');
-  element('pair-fingerprint').textContent = pair.fingerprint ? t('pairFingerprint', { fingerprint: pair.fingerprint }) : '';
-  element('pair-details').hidden = !pair.fingerprint;
-  element('copy-pair-task').disabled = !pair.fingerprint || !!busyAction;
-  element('pair-task').value = pair.fingerprint ? t('pairTask', { endpoint: visibleEndpoint, extensionId: chrome.runtime.id || '', pairId: pair.pairId, fingerprint: pair.fingerprint }) : '';
+  element('pair-fingerprint').textContent = fingerprint ? t('pairFingerprint', { fingerprint: fingerprint.groups, code: fingerprint.code }) : '';
+  element('pair-details').hidden = !fingerprint;
+  element('copy-pair-task').disabled = !fingerprint || !!busyAction;
+  element('pair-task').value = fingerprint ? t('pairTask', { endpoint: visibleEndpoint, extensionId: chrome.runtime.id || '', pairId: pair.pairId, fingerprint: pair.fingerprint, code: fingerprint.code }) : '';
 }
 async function refreshPairingStatus() {
   const pair = await mutate({ type: 'PAIR_STATUS' });
@@ -436,7 +565,7 @@ async function refreshLibrary() {
   refreshing = (async () => {
     try {
       await mutate({ type: 'SYNC' });
-      await renderList(); await renderHome();
+      await renderList();
       element('refresh-status').textContent = '资料已更新';
       element('retry-refresh').hidden = true;
     } catch (error) {
@@ -454,7 +583,8 @@ function renderConnection(status) {
   element('auth-status').textContent = authError ? errorText(authError) : t(checkingConnection ? 'checking' : pairingView?.status === 'pending' ? 'pairWaiting' : status?.connected ? configuredLibrary ? 'connected' : 'connectedUnsaved' : configuredLibrary ? 'configuredOffline' : 'disconnected');
   element('connection-meta').textContent = t('footer', { server: pairingState.baseUrl || t('offline'), version: chrome.runtime.getManifest().version, extensionId: chrome.runtime.id || t('unverified'), protocol: status?.protocolVersion || t('unverified') });
   updateExportButton();
-  renderHome().catch(() => { element('home-status').textContent = t('genericFailure'); });
+  element('collection-setup').hidden = configuredLibrary;
+  element('home-status').textContent = configuredLibrary ? '' : t('homeNeedsSetup');
 }
 function translatePage() {
   document.documentElement.lang = uiLanguage;
@@ -487,7 +617,7 @@ async function showConnection({ verifyOnly = false, authorize = false } = {}) {
 
   } catch (error) {
     if (sequence !== validationSequence) return;
-    checkingConnection = false; authError = error.message;
+    checkingConnection = false; authError = error;
     if (error.message.includes('PAIR_REQUIRED')) pairingState.approved = false;
     renderConnection(null); renderPairingStatus();
     throw error;
@@ -540,6 +670,11 @@ function watchApproval(endpoint, expectedPair, startedAt = Date.now()) {
       }
     } catch (error) {
       if (!current()) return;
+      if (['CLOCK_SKEW', 'EXTENSION_ID_UNSET'].includes(error.diagnostic?.code)) {
+        authError = error;
+        renderConnection(null);
+        return;
+      }
       if (Date.now() - startedAt >= 10 * 60 * 1000) { element('auth-status').textContent = t('pairExpired'); element('auth-status').setAttribute('data-state', 'error'); return; }
       element('auth-status').textContent = t('pairRetry', { reason: errorText(error) });
       element('auth-status').setAttribute('data-state', 'error');
@@ -595,14 +730,47 @@ async function init() {
   translatePage();
   for (const [view] of views) element(`view-${view}`).addEventListener('click', async () => {
     selectedView = view; clearListFilters();
-    if (location.hash.startsWith('#reading-list')) history.replaceState(null, '', '#reading-list/' + view);
+    history.replaceState(null, '', collectionHash(view));
     await renderList();
   });
-  for (const id of ['filter-type', 'filter-status']) element(id).addEventListener('change', renderList);
+  element('filter-type').addEventListener('change', renderList);
+  element('edit-form').addEventListener('submit', saveEditor);
+  for (const id of ['edit-tags', 'edit-note']) element(id).addEventListener('input', () => {
+    element(id).removeAttribute('aria-invalid');
+    element('edit-feedback').textContent = '';
+    if (id === 'edit-note') renderNoteCount();
+  });
+  for (const id of ['edit-back', 'edit-cancel']) element(id).addEventListener('click', event => {
+    event.preventDefault();
+    if (!editSession?.saving) return returnToList();
+  });
+  const folderButton = element('open-folder-form');
+  folderButton.appendChild(svg([folderIcon, 'M12 10v6m-3-3h6']));
+  const picker = element('folder-picker');
+  picker.appendChild(svg(chevronIcon));
+  picker.addEventListener('click', () => setFolderPickerOpen(picker.getAttribute('aria-expanded') !== 'true'));
+  element('library-sidebar').addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !event.defaultPrevented && folderPickerIsOpen()) {
+      event.preventDefault();
+      setFolderPickerOpen(false, true);
+    }
+  });
+  folderButton.addEventListener('click', () => {
+    const form = element('folder-form');
+    if (!form.hidden) { closeFolderForm(true); return; }
+    element('folder-status').textContent = '';
+    form.hidden = false;
+    folderButton.setAttribute('aria-expanded', 'true');
+    element('folder-name').focus();
+  });
+  element('cancel-folder').addEventListener('click', () => closeFolderForm(true));
+  element('folder-name').addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeFolderForm(true); }
+  });
   element('folder-form').addEventListener('submit', async event => {
     event.preventDefault();
     const input = element('folder-name'), button = element('create-folder'), feedback = element('folder-status');
-    if (button.disabled) return;
+    if (button.disabled || element('folder-form').hidden) return;
     const name = input.value.trim();
     if (!isFolderName(name)) {
       input.setAttribute('aria-invalid', 'true');
@@ -610,17 +778,27 @@ async function init() {
       return;
     }
     input.removeAttribute('aria-invalid');
-    const parentId = selectedFolder && selectedFolder !== unfiled ? selectedFolder : null;
-    button.disabled = true; input.disabled = true;
+    const fromFolder = selectedFolder;
+    const parentId = fromFolder && fromFolder !== unfiled ? fromFolder : null;
+    const cancel = element('cancel-folder');
+    button.disabled = true; input.disabled = true; cancel.disabled = true; folderButton.disabled = true;
+    let created = false;
     try {
       const result = await mutate({ type: 'CREATE_FOLDER', name, parentId });
-      selectedFolder = result.folderId;
-      selectedItem = null; selectedTag = '';
-      input.value = '';
+      created = true;
+      if (selectedView === 'reference' && selectedFolder === fromFolder) {
+        if (parentId) expandedFolders.add(parentId);
+        selectedFolder = result.folderId;
+        selectedItem = null; selectedTag = '';
+      }
+      closeFolderForm(false);
       feedback.textContent = '文件夹已建立。';
-      await renderList();
     } catch (error) { feedback.textContent = errorText(error); }
-    finally { button.disabled = false; input.disabled = false; }
+    finally {
+      button.disabled = false; input.disabled = false; cancel.disabled = false;
+      await renderList();
+      if (created && selectedView === 'reference' && currentRoute === 'reading-list') folderButton.focus();
+    }
   });
   element('filter-starred').addEventListener('change', renderList);
   element('filter-search').addEventListener('input', renderList);
@@ -630,14 +808,8 @@ async function init() {
     selectedFolder = folder;
     await renderList();
   });
-  for (const [id, value] of statusTabs) element(id).addEventListener('click', async () => { selectedStatus = value; await renderList(); });
-  applyRoute(initialRoute(location.hash));
-  globalThis.addEventListener?.('hashchange', async () => {
-    applyRoute(initialRoute(location.hash));
-    const view = initialView(location.hash);
-    if (view && view !== selectedView) { selectedView = view; clearListFilters(); await renderList(); }
-    if (currentRoute === 'reading-list') await refreshLibrary();
-  });
+  applyRoute(parseHash(location.hash).route);
+  globalThis.addEventListener?.('hashchange', () => showLocation({ refresh: true, focus: true }));
   globalThis.addEventListener?.('focus', () => { if (currentRoute === 'reading-list') return refreshLibrary(); });
   element('retry-refresh').addEventListener('click', refreshLibrary);
   await renderList();
@@ -662,7 +834,9 @@ async function init() {
     uiLanguage = chooseLanguage(element('ui-language').value);
     await chrome.storage.local.set({ uiLanguage });
     translatePage(); renderPairingStatus(); renderConnection(connection);
-    await renderList(); await renderHome(); await showSyncStatus();
+    applyRoute(currentRoute);
+    if (editSession) renderNoteCount();
+    await renderList(); await showSyncStatus();
   });
   async function exportLibrary() {
     element('export-status').textContent = t('exportWorking');
@@ -698,15 +872,12 @@ async function init() {
     watchApproval(pendingConnectionSetup.endpoint, pendingConnectionSetup, pendingConnectionSetup.startedAt);
   } else if (pairingState.approved) { try { await showConnection(); } catch { /* failure is shown next to the action */ } }
 
-  const configured = configuredLibrary;
-  applyRoute(initialRoute(location.hash, configured));
-  await renderHome(); await renderList();
-  if (currentRoute === 'reading-list') await refreshLibrary();
+  await showLocation({ refresh: true });
 
   // Keep the list fresh if a save happens (from the toolbar icon) while this
   // tab is open.
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.items) { renderList(); renderHome(); }
+    if (changes.items) renderList();
     if (changes.knowledgeSync) { showSyncStatus(); renderList(); }
   });
 }

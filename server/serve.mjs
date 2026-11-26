@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { loadHostConfig, createHost } from './host.js';
 import { parseConnectionUrl } from '../src/lib/connection-url.js';
-export function createNodeServer({ handleRequest, baseUrl, maxBytes = 20 * 1024 * 1024 }) {
+export function createNodeServer({ handleRequest, baseUrl, trustProxyClientIp = false, maxBytes = 20 * 1024 * 1024 }) {
   const target = parseConnectionUrl(baseUrl);
   const server = createServer(async (incoming, outgoing) => {
     try {
@@ -17,7 +17,11 @@ export function createNodeServer({ handleRequest, baseUrl, maxBytes = 20 * 1024 
       // Never buffer arbitrary unauthenticated requests in front of that handler.
       const request = new Request(target.origin + incoming.url, { method: incoming.method, headers: incoming.headers,
         ...(!['GET', 'HEAD'].includes(incoming.method) ? { body: Readable.toWeb(incoming), duplex: 'half' } : {}) });
-      const response = await handleRequest(request);
+      const peer = incoming.socket.remoteAddress;
+      const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+      // Only an explicitly trusted loopback proxy can supply its observed client address.
+      const clientIp = loopback ? trustProxyClientIp ? incoming.headers['x-real-ip'] : null : peer;
+      const response = await handleRequest(request, { clientIp });
       outgoing.writeHead(response.status, Object.fromEntries(response.headers)); outgoing.end(Buffer.from(await response.arrayBuffer())); incoming.resume();
     } catch { if (!outgoing.headersSent) outgoing.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); outgoing.end('{"ok":false,"error":"Connection request failed."}'); }
   });
@@ -32,7 +36,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const config = await loadHostConfig(file), host = await createHost(config);
     const port = config.port ?? 8787;
     if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error();
-    const server = createNodeServer({ ...host, baseUrl: config.baseUrl });
+    const server = createNodeServer({ ...host, baseUrl: config.baseUrl, trustProxyClientIp: config.trustProxyClientIp });
     server.on('error', () => { console.error('Could not start the loopback connection server.'); process.exitCode = 1; });
     server.listen(port, '127.0.0.1', () => console.log('ReadFlow connection ready on loopback; expose only through your authenticated HTTPS configuration.'));
   } catch { console.error('Connection startup failed. Use: node server/serve.mjs private/host.json [--env private/host.env]. Check private configuration, environment and state initialization.'); process.exitCode = 1; }

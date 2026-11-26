@@ -10,7 +10,9 @@ import { randomUUID } from 'node:crypto';
 import { SafeError, isSafeArticleUrl, normalizeArticleUrl } from '../src/lib/security.js';
 import { metadataUpdate } from '../src/lib/capture-metadata.js';
 import { LIBRARY_ITEM_LIMIT } from '../src/lib/library-limits.js';
-import { READING_STATUSES } from '../src/lib/reading-state.js';
+
+// Historic fields stay in existing SQLite rows. They are absent from current snapshots.
+const articleSnapshot = ({ status, read, readAt, ...article }) => article;
 
 export async function openLibrary(stateDir, { initialize = false, now = () => Date.now() } = {}) {
   const privateStat = (s, directory = false) => {
@@ -32,7 +34,6 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
     if (initialize) db.exec(`
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS edits (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, fields TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
     `);
@@ -42,18 +43,19 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
     }
     const libraryId = db.prepare('SELECT value FROM metadata WHERE key=?').get('libraryId')?.value;
     if (!/^[a-f0-9]{32}$/.test(libraryId || '')) throw new SafeError('Initialize the ReadFlow database before starting.');
-    db.exec('CREATE TABLE IF NOT EXISTS reading_events (id INTEGER PRIMARY KEY, article_id TEXT NOT NULL, status TEXT NOT NULL, at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, data TEXT NOT NULL);');
+    db.exec('CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, data TEXT NOT NULL);');
     db.exec('CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT)');
     const folders = () => db.prepare('SELECT id, name, parent_id AS parentId FROM folders ORDER BY rowid').all();
     const folderExists = id => !!db.prepare('SELECT 1 FROM folders WHERE id=?').get(id);
     const identity = { connectionId: `db:${libraryId}`, base: `${libraryId}/library` };
-    const list = () => db.prepare('SELECT data FROM articles ORDER BY rowid').all().map(row => JSON.parse(row.data));
+    const storedArticles = () => db.prepare('SELECT data FROM articles ORDER BY rowid').all().map(row => JSON.parse(row.data));
+    const list = () => storedArticles().map(articleSnapshot);
     const get = id => { const row = db.prepare('SELECT data FROM articles WHERE id=?').get(id); return row ? JSON.parse(row.data) : null; };
     const put = article => db.prepare('INSERT INTO articles VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(article.recordId, article.url, JSON.stringify(article));
     const transaction = work => { db.exec('BEGIN IMMEDIATE'); try { const value = work(); db.exec('COMMIT'); return value; } catch (error) { db.exec('ROLLBACK'); throw error; } };
-    // Consolidate notes and keep status/read as one reading state.
+    // Consolidate notes and fill organization defaults for existing articles.
     transaction(() => {
-      for (const article of list()) {
+      for (const article of storedArticles()) {
         let dirty = false;
         const defaults = organization(article);
         if (Object.keys(defaults).some(key => article[key] === undefined)) {
@@ -65,26 +67,10 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
           article.remark = readingNote(article); delete article.note; dirty = true;
         }
         if (Object.hasOwn(article, 'snoozedUntil')) { delete article.snoozedUntil; dirty = true; }
-        if (READING_STATUSES.includes(article.status)) {
-          const read = article.status !== '待阅读';
-          if (article.read !== read) { article.read = read; dirty = true; }
-        } else {
-          article.status = article.read ? '已读' : '待阅读';
-          article.read = article.status !== '待阅读';
-          dirty = true;
-        }
         if (dirty) put(article);
       }
     });
-    const transition = (article, status, time) => {
-      if (article.status !== status) {
-        db.prepare('INSERT INTO reading_events(article_id,status,at) VALUES (?,?,?)').run(article.recordId, status, time);
-        article.readAt = status === '已读' ? time : null;
-      }
-      article.status = status; article.read = status !== '待阅读'; delete article.snoozedUntil;
-    };
     return {
-      readingEvents: () => db.prepare('SELECT article_id AS recordId, status, at FROM reading_events ORDER BY id').all(),
       reviews: () => db.prepare('SELECT data FROM reviews ORDER BY rowid DESC').all().map(row => JSON.parse(row.data)),
       saveReview(review) { return transaction(() => {
         const existing = db.prepare('SELECT data FROM reviews WHERE id=?').get(review.id);
@@ -107,7 +93,7 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
           return { folderId: id, folders: folders() };
         });
       },
-      identity, libraryId, list, get, close: () => db.close(),
+      identity, libraryId, list, get(id) { const article = get(id); return article && articleSnapshot(article); }, close: () => db.close(),
       store: {
         async load() { return JSON.parse(db.prepare('SELECT data FROM runtime_state WHERE id=1').get().data); },
         async save(value) { const text = JSON.stringify(value); if (Buffer.byteLength(text) > 32 * 1024 * 1024) throw new SafeError('State exceeds capacity.'); db.prepare('UPDATE runtime_state SET data=? WHERE id=1').run(text); },
@@ -136,9 +122,8 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
                 throw new SafeError(`Library is full (${LIBRARY_ITEM_LIMIT} items). Delete some items before saving new ones.`);
               }
               const href = normalizeArticleUrl(item.url);
-              const status = READING_STATUSES.includes(item.status) ? item.status : item.read ? '已读' : '待阅读';
               article = { recordId: 'rec' + randomUUID().replaceAll('-', ''), captureId: item.id, url: href,
-                title: item.title || href, savedAt: Date.parse(item.savedAt), status, read: status !== '待阅读', readAt: null,
+                title: item.title || href, savedAt: Date.parse(item.savedAt),
                 tags: [], remark: '', ...organization(), organizationSources: { purpose: 'default', contentType: 'default', starred: 'default' } };
               created++;
             }
@@ -167,27 +152,13 @@ export async function openLibrary(stateDir, { initialize = false, now = () => Da
           return { created, bindings, metadataBindings, articles, folders: folders(), captureMetadata: { available: true, tagOptions: [...new Set(articles.flatMap(a => a.tags))] } };
         });
       },
-      applyAction(eventId, id, action, time = now()) {
-        if (!/^[A-Za-z0-9_-]{1,128}$/.test(eventId || '') || !['read', 'skip', 'later'].includes(action)) throw new SafeError('Invalid reading action.');
-        return transaction(() => {
-          if (db.prepare('SELECT id FROM actions WHERE id=?').get(eventId)) return { duplicate: true };
-          const article = get(id); if (!article) throw new SafeError('Reading item not found.');
-          transition(article, action === 'read' ? '已读' : action === 'skip' ? '跳过' : '待阅读', time);
-          put(article); db.prepare('INSERT INTO actions VALUES (?)').run(eventId); return { duplicate: false };
-        });
-      },
       deleteArticle(id) {
         if (!/^rec[A-Za-z0-9]+$/.test(id || '')) throw new SafeError('Invalid record ID.');
         return transaction(() => {
-          db.prepare('DELETE FROM reading_events WHERE article_id=?').run(id);
           db.prepare('DELETE FROM edits WHERE article_id=?').run(id);
           db.prepare('DELETE FROM articles WHERE id=?').run(id);
           return { deleted: true, recordId: id };
         });
-      },
-      setStatus(id, status) {
-        if (!['待阅读', '已读', '跳过'].includes(status)) throw new SafeError('Invalid reading status.');
-        return transaction(() => { const article = get(id); if (!article) throw new SafeError('Reading item not found.'); transition(article, status, now()); put(article); return article; });
       },
     };
   } catch (error) { db.close(); throw error; }

@@ -14,7 +14,6 @@ export function mergeKnowledge(items, result) {
     ...item, metadataUpdate: pending, tags: record.tags || [], remark: record.remark || '',
     ...organization(record), folderId: record.folderId ?? null, organizationSources: record.organizationSources, ...pending?.fields,
     title: record.title || item.title, url: record.url,
-    readAt: record.readAt ?? null, status: record.status,
     libraryRecordId: record.recordId, libraryBase: result.base, notifiedAt: null, libraryDeleted: false,
   });
   const merged = items.map(normalizeLibraryItem).map(item => {

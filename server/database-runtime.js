@@ -1,7 +1,7 @@
 import { SafeError } from '../src/lib/security.js';
 import { libraryCsv } from './lib/csv.js';
 
-const allowed = { folders: ['name', 'parentId'], delete: ['base', 'recordId'], health: [], sync: ['items'], read: ['base', 'recordId', 'status', 'read'], preferences: ['language'], csv: [] };
+const allowed = { folders: ['name', 'parentId'], delete: ['base', 'recordId'], health: [], sync: ['items'], preferences: ['language'], csv: [] };
 export function createDatabaseConnector({ library, config = {}, store, exclusive }) {
   const identity = library.identity;
   let queue = Promise.resolve();
@@ -20,11 +20,6 @@ export function createDatabaseConnector({ library, config = {}, store, exclusive
       if (action === 'delete') {
         if (payload.base !== identity.base) throw new SafeError('Library identity changed.');
         return envelope(library.deleteArticle(payload.recordId));
-      }
-      if (action === 'read') {
-        if (payload.base !== identity.base) throw new SafeError('Library identity changed.');
-        const article = library.setStatus(payload.recordId, payload.status ?? (payload.read === true ? '已读' : payload.read === false ? '待阅读' : ''));
-        return envelope({ readAt: article.readAt ?? null });
       }
       if (action === 'preferences') {
         if (!['en', 'zh'].includes(payload.language)) throw new SafeError('Invalid preferences.');

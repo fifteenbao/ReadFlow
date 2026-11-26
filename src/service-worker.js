@@ -1,7 +1,8 @@
 import { readingNote } from './lib/reading-note.js';
 import { requestPairing, getPairingStatus } from './lib/pairing-client.js';
+import { cleanDiagnostic } from './lib/diagnostics.js';
 import { SafeError, safeErrorMessage } from './lib/security.js';
-import { getItems, setItems, setSettings, setRead, setReadingStatus, prepareCapture, deleteItem, disconnectCollection } from './lib/storage.js';
+import { getItems, setItems, setSettings, prepareCapture, deleteItem, disconnectCollection } from './lib/storage.js';
 import { callKnowledge, mergeKnowledge } from './lib/knowledge.js';
 import { callConnection, connectionStatus } from './lib/connection.js';
 import { organization, inferContentType } from './lib/organization.js';
@@ -128,7 +129,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id || sender.frameId !== undefined && sender.frameId !== 0 || !fromOptions && !fromPopup) return;
   if (fromPopup && !['CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'POPUP_STATUS'].includes(message?.type)) return;
   if (fromOptions && ['CAPTURE_PAGE', 'CAPTURE_CONTEXT'].includes(message?.type)) return;
-  if (!['POPUP_STATUS', 'CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'UPDATE_METADATA', 'CREATE_FOLDER', 'SET_STATUS', 'SET_READ', 'DELETE_ITEM', 'SAVE_SETTINGS', 'CONNECTION_STATUS', 'SYNC', 'VALIDATE_CONNECTION', 'DISCONNECT', 'PAIR_REQUEST', 'PAIR_STATUS', 'EXPORT_CSV'].includes(message?.type)) return;
+  if (!['POPUP_STATUS', 'CAPTURE_PAGE', 'CAPTURE_CONTEXT', 'UPDATE_METADATA', 'CREATE_FOLDER', 'DELETE_ITEM', 'SAVE_SETTINGS', 'CONNECTION_STATUS', 'SYNC', 'VALIDATE_CONNECTION', 'DISCONNECT', 'PAIR_REQUEST', 'PAIR_STATUS', 'EXPORT_CSV'].includes(message?.type)) return;
   if (!message || typeof message !== 'object' || JSON.stringify(message).length > 8192) { reply({ ok: false, error: 'Invalid request.' }); return; }
   enqueue(async () => {
     if (message.type === 'CREATE_FOLDER') {
@@ -174,7 +175,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return { ok: true, existing: !!item, ...current, inferredContentType, url: tab.url, title: item?.title || tab.title || tab.url, tags: item?.tags || [], remark: readingNote(item),
         tagOptions: [...new Set([...(item?.tags || []), ...(knowledgeSync?.tagOptions || []), ...items.flatMap(item => item.tags || [])])] };
     }
-    if (['SET_READ', 'SET_STATUS', 'DELETE_ITEM'].includes(message.type) && (typeof message.id !== 'string' || message.id.length > 512)) throw new SafeError('Invalid item ID.');
+    if (message.type === 'DELETE_ITEM' && (typeof message.id !== 'string' || message.id.length > 512)) throw new SafeError('Invalid item ID.');
     if (message.type === 'DISCONNECT') { await chrome.storage.local.remove('pendingConnectionSetup'); return disconnectCollection(); }
     if (message.type === 'PAIR_REQUEST') {
       const pair = await requestPairing(message.connectionUrl);
@@ -190,22 +191,18 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (message.type === 'SAVE_SETTINGS') { const settings = await setSettings(message.settings); await chrome.storage.local.remove('pendingConnectionSetup'); return { ok: true, settings }; }
     if (message.type === 'CONNECTION_STATUS') return { ok: true, ...await callConnection('health', {}, { endpoint: message.connectionUrl }) };
     if (message.type === 'SYNC') { await syncReadingLibrary(); return { ok: true }; }
-    if (message.type === 'SET_STATUS') {
-      await setReadingStatus(message.id, message.status);
-    } else if (message.type === 'SET_READ') {
-      if (typeof message.read !== 'boolean') throw new SafeError('Invalid reading status.');
-      await setRead(message.id, message.read);
-    } else {
-      const item = (await getItems()).find(item => item.id === message.id);
-      const recordId = libraryRecordId(item);
-      if (recordId && !isLibraryDeleted(item)) {
-        const result = await callConnection('delete', { recordId, base: libraryBase(item) });
-        if (result.deleted !== true || result.recordId !== recordId) throw new SafeError('Deletion was not confirmed. Refresh the library before retrying.');
-      }
-      await deleteItem(message.id);
+    const item = (await getItems()).find(item => item.id === message.id);
+    const recordId = libraryRecordId(item);
+    if (recordId && !isLibraryDeleted(item)) {
+      const result = await callConnection('delete', { recordId, base: libraryBase(item) });
+      if (result.deleted !== true || result.recordId !== recordId) throw new SafeError('Deletion was not confirmed. Refresh the library before retrying.');
     }
+    await deleteItem(message.id);
     return { ok: true };
-  }).then(reply, error => reply({ ok: false, error: safeErrorMessage(error) }));
+  }).then(reply, error => {
+    const diagnostic = cleanDiagnostic(error?.diagnostic);
+    reply({ ok: false, error: safeErrorMessage(error), ...(diagnostic ? { diagnostic } : {}) });
+  });
   return true;
 });
 // Toolbar feedback needs no script injection or page-content access.
